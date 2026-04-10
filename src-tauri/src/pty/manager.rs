@@ -79,6 +79,11 @@ impl PtyManager {
 
                     // Scan for OSC notification sequences
                     if let Some(notif) = osc_parser.parse(&data) {
+                        // Send Windows toast notification
+                        crate::notification::send_system_notification(
+                            &app_handle, &notif.title, &notif.body,
+                        );
+
                         let _ = app_handle.emit(
                             "osc-notification",
                             OscNotificationEvent {
