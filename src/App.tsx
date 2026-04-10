@@ -1,19 +1,25 @@
-import { useEffect, useCallback, useState, useMemo } from "react";
+import { useEffect, useCallback, useState, useMemo, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import TitleBar from "./components/TitleBar/TitleBar";
 import Sidebar from "./components/Sidebar/Sidebar";
 import SplitContainer from "./components/SplitPane/SplitContainer";
 import NotificationPanel from "./components/Notification/NotificationPanel";
 import CommandPalette from "./components/CommandPalette/CommandPalette";
+import WorkspacePresets from "./components/Sidebar/WorkspacePresets";
+import type { LayoutPreset } from "./components/Sidebar/WorkspacePresets";
 import { useWorkspaceStore, getTerminalIds } from "./stores/workspaceStore";
 import { useSettingsStore } from "./stores/settingsStore";
-import { closeTerminal } from "./lib/ipc";
+import { closeTerminal, saveSession, loadSession } from "./lib/ipc";
+import type { SessionData, PaneNode } from "./types";
+
+const AUTO_SAVE_INTERVAL = 5000; // 5 seconds
 
 export default function App() {
   const {
     workspaces,
     activeWorkspaceId,
     createWorkspace,
+    createWorkspaceWithTree,
     removeWorkspace,
     setActiveWorkspace,
     setActiveTerminal,
@@ -23,6 +29,7 @@ export default function App() {
     toggleSidebar,
     incrementUnread,
     sidebarVisible,
+    sidebarWidth,
   } = useWorkspaceStore();
 
   const loadSettings = useSettingsStore((s) => s.load);
@@ -30,36 +37,87 @@ export default function App() {
 
   const [notifPanelVisible, setNotifPanelVisible] = useState(false);
   const [commandPaletteVisible, setCommandPaletteVisible] = useState(false);
+  const [presetPickerVisible, setPresetPickerVisible] = useState(false);
+  const sessionRestoredRef = useRef(false);
 
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId);
 
-  // Load settings on mount
+  // ── Session Restore on mount ────────────────────────────────────
   useEffect(() => {
-    loadSettings();
-  }, [loadSettings]);
+    if (sessionRestoredRef.current) return;
+    sessionRestoredRef.current = true;
 
-  // Create initial workspace
-  useEffect(() => {
-    if (workspaces.length === 0) {
+    loadSettings();
+
+    loadSession().then((data) => {
+      if (data && data.workspaces.length > 0) {
+        // Restore workspaces from saved session
+        data.workspaces.forEach((ws) => {
+          createWorkspaceWithTree(ws.name, restorePaneTree(ws.paneTree));
+        });
+      } else {
+        createWorkspace();
+      }
+    }).catch(() => {
       createWorkspace();
-    }
-  }, [workspaces.length, createWorkspace]);
+    });
+  }, [loadSettings, createWorkspace, createWorkspaceWithTree]);
+
+  // ── Auto-save session every 5 seconds ──────────────────────────
+  useEffect(() => {
+    if (workspaces.length === 0) return;
+
+    const timer = setInterval(() => {
+      const sessionData: SessionData = {
+        workspaces: workspaces.map((ws) => ({
+          name: ws.name,
+          color: ws.color,
+          paneTree: serializePaneTree(ws.paneTree),
+        })),
+        activeWorkspace: workspaces.findIndex((w) => w.id === activeWorkspaceId),
+        sidebarWidth,
+        sidebarVisible,
+        windowState: { x: 0, y: 0, width: 1280, height: 800, maximized: false },
+      };
+      saveSession(sessionData).catch(() => {});
+    }, AUTO_SAVE_INTERVAL);
+
+    return () => clearInterval(timer);
+  }, [workspaces, activeWorkspaceId, sidebarWidth, sidebarVisible]);
+
+  // ── Also save on beforeunload ──────────────────────────────────
+  useEffect(() => {
+    const handler = () => {
+      if (workspaces.length === 0) return;
+      const sessionData: SessionData = {
+        workspaces: workspaces.map((ws) => ({
+          name: ws.name,
+          color: ws.color,
+          paneTree: serializePaneTree(ws.paneTree),
+        })),
+        activeWorkspace: workspaces.findIndex((w) => w.id === activeWorkspaceId),
+        sidebarWidth,
+        sidebarVisible,
+        windowState: { x: 0, y: 0, width: 1280, height: 800, maximized: false },
+      };
+      saveSession(sessionData).catch(() => {});
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [workspaces, activeWorkspaceId, sidebarWidth, sidebarVisible]);
 
   // Listen for terminal exit events
   useEffect(() => {
     const unlisten = listen<{ terminal_id: string }>("terminal-exit", (event) => {
-      // Find which workspace contains this terminal and handle cleanup
       const ws = workspaces.find((w) => {
         const ids = getTerminalIds(w.paneTree);
         return ids.includes(event.payload.terminal_id);
       });
       if (ws) {
-        // Find the pane with this terminal
         const pane = findPaneByTerminalId(ws.paneTree, event.payload.terminal_id);
         if (pane) {
           const removedId = closePane(ws.id, pane.id);
           if (removedId && ws.paneTree.type === "terminal") {
-            // Last pane in workspace closed - remove workspace or create new terminal
             if (workspaces.length > 1) {
               removeWorkspace(ws.id);
             }
@@ -68,9 +126,7 @@ export default function App() {
       }
     });
 
-    return () => {
-      unlisten.then((fn) => fn());
-    };
+    return () => { unlisten.then((fn) => fn()); };
   }, [workspaces, closePane, removeWorkspace]);
 
   // Listen for OSC notifications
@@ -88,21 +144,16 @@ export default function App() {
       }
     );
 
-    return () => {
-      unlisten.then((fn) => fn());
-    };
+    return () => { unlisten.then((fn) => fn()); };
   }, [workspaces, activeWorkspaceId, incrementUnread]);
 
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      // Ctrl+Shift+T: New workspace
       if (e.ctrlKey && e.shiftKey && e.key === "T") {
         e.preventDefault();
-        createWorkspace();
-      }
-      // Ctrl+Shift+W: Close workspace
-      else if (e.ctrlKey && e.shiftKey && e.key === "W") {
+        setPresetPickerVisible(true);
+      } else if (e.ctrlKey && e.shiftKey && e.key === "W") {
         e.preventDefault();
         if (activeWorkspaceId && workspaces.length > 1) {
           const ws = workspaces.find((w) => w.id === activeWorkspaceId);
@@ -112,34 +163,22 @@ export default function App() {
             removeWorkspace(activeWorkspaceId);
           }
         }
-      }
-      // Ctrl+Shift+D: Split right
-      else if (e.ctrlKey && e.shiftKey && e.key === "D") {
+      } else if (e.ctrlKey && e.shiftKey && e.key === "D") {
         e.preventDefault();
         handleSplit("horizontal");
-      }
-      // Ctrl+Shift+E: Split down
-      else if (e.ctrlKey && e.shiftKey && e.key === "E") {
+      } else if (e.ctrlKey && e.shiftKey && e.key === "E") {
         e.preventDefault();
         handleSplit("vertical");
-      }
-      // Ctrl+B: Toggle sidebar
-      else if (e.ctrlKey && !e.shiftKey && e.key === "b") {
+      } else if (e.ctrlKey && !e.shiftKey && e.key === "b") {
         e.preventDefault();
         toggleSidebar();
-      }
-      // Ctrl+Shift+P: Command palette
-      else if (e.ctrlKey && e.shiftKey && e.key === "P") {
+      } else if (e.ctrlKey && e.shiftKey && e.key === "P") {
         e.preventDefault();
         setCommandPaletteVisible((v) => !v);
-      }
-      // Ctrl+Shift+I: Notifications
-      else if (e.ctrlKey && e.shiftKey && e.key === "I") {
+      } else if (e.ctrlKey && e.shiftKey && e.key === "I") {
         e.preventDefault();
         setNotifPanelVisible((v) => !v);
-      }
-      // Ctrl+1-9: Switch workspace
-      else if (e.ctrlKey && !e.shiftKey && e.key >= "1" && e.key <= "9") {
+      } else if (e.ctrlKey && !e.shiftKey && e.key >= "1" && e.key <= "9") {
         const index = parseInt(e.key) - 1;
         if (index < workspaces.length) {
           e.preventDefault();
@@ -150,14 +189,7 @@ export default function App() {
 
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [
-    workspaces,
-    activeWorkspaceId,
-    createWorkspace,
-    removeWorkspace,
-    setActiveWorkspace,
-    toggleSidebar,
-  ]);
+  }, [workspaces, activeWorkspaceId, createWorkspace, removeWorkspace, setActiveWorkspace, toggleSidebar]);
 
   const handleSplit = useCallback(
     (direction: "horizontal" | "vertical") => {
@@ -173,10 +205,18 @@ export default function App() {
     [activeWorkspace, splitPane]
   );
 
+  const handleNewWorkspace = useCallback(
+    (preset: LayoutPreset, name: string) => {
+      const tree = preset.build();
+      createWorkspaceWithTree(name || undefined as unknown as string, tree);
+      setPresetPickerVisible(false);
+    },
+    [createWorkspaceWithTree]
+  );
+
   const handleTerminalReady = useCallback(
     (paneId: string, terminalId: string) => {
       if (!activeWorkspace) return;
-      // Update the pane tree with the terminal ID
       const updated = setPaneTerminalId(activeWorkspace.paneTree, paneId, terminalId);
       updatePaneTree(activeWorkspace.id, updated);
       setActiveTerminal(activeWorkspace.id, terminalId);
@@ -186,7 +226,7 @@ export default function App() {
 
   const commands = useMemo(
     () => [
-      { id: "newWorkspace", label: "New Workspace", shortcut: "Ctrl+Shift+T", action: () => createWorkspace() },
+      { id: "newWorkspace", label: "New Workspace...", shortcut: "Ctrl+Shift+T", action: () => setPresetPickerVisible(true) },
       { id: "splitRight", label: "Split Right", shortcut: "Ctrl+Shift+D", action: () => handleSplit("horizontal") },
       { id: "splitDown", label: "Split Down", shortcut: "Ctrl+Shift+E", action: () => handleSplit("vertical") },
       { id: "toggleSidebar", label: "Toggle Sidebar", shortcut: "Ctrl+B", action: toggleSidebar },
@@ -198,7 +238,7 @@ export default function App() {
         action: () => setActiveWorkspace(w.id),
       })),
     ],
-    [workspaces, createWorkspace, handleSplit, toggleSidebar, setActiveWorkspace]
+    [workspaces, handleSplit, toggleSidebar, setActiveWorkspace]
   );
 
   return (
@@ -216,9 +256,10 @@ export default function App() {
       <TitleBar />
 
       <div style={{ flex: 1, display: "flex", overflow: "hidden", position: "relative" }}>
-        {sidebarVisible && <Sidebar onNewWorkspace={() => createWorkspace()} />}
+        {sidebarVisible && (
+          <Sidebar onNewWorkspace={() => setPresetPickerVisible(true)} />
+        )}
 
-        {/* Main content area */}
         <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
           {activeWorkspace && (
             <SplitContainer
@@ -245,6 +286,12 @@ export default function App() {
         onClose={() => setCommandPaletteVisible(false)}
         commands={commands}
       />
+
+      <WorkspacePresets
+        visible={presetPickerVisible}
+        onSelect={handleNewWorkspace}
+        onClose={() => setPresetPickerVisible(false)}
+      />
     </div>
   );
 }
@@ -252,45 +299,26 @@ export default function App() {
 // ── Helpers ──────────────────────────────────────────────────────
 
 function findActivePaneNode(
-  node: import("./types").PaneNode,
+  node: PaneNode,
   activeTerminalId: string | null
-): import("./types").PaneNode | null {
+): PaneNode | null {
   if (node.type === "terminal") {
-    if (!activeTerminalId || node.terminalId === activeTerminalId) {
-      return node;
-    }
+    if (!activeTerminalId || node.terminalId === activeTerminalId) return node;
     return null;
   }
-  return (
-    findActivePaneNode(node.first, activeTerminalId) ||
-    findActivePaneNode(node.second, activeTerminalId)
-  );
+  return findActivePaneNode(node.first, activeTerminalId) || findActivePaneNode(node.second, activeTerminalId);
 }
 
-function findPaneByTerminalId(
-  node: import("./types").PaneNode,
-  terminalId: string
-): import("./types").PaneNode | null {
-  if (node.type === "terminal" && node.terminalId === terminalId) {
-    return node;
-  }
+function findPaneByTerminalId(node: PaneNode, terminalId: string): PaneNode | null {
+  if (node.type === "terminal" && node.terminalId === terminalId) return node;
   if (node.type === "split") {
-    return (
-      findPaneByTerminalId(node.first, terminalId) ||
-      findPaneByTerminalId(node.second, terminalId)
-    );
+    return findPaneByTerminalId(node.first, terminalId) || findPaneByTerminalId(node.second, terminalId);
   }
   return null;
 }
 
-function setPaneTerminalId(
-  node: import("./types").PaneNode,
-  paneId: string,
-  terminalId: string
-): import("./types").PaneNode {
-  if (node.id === paneId && node.type === "terminal") {
-    return { ...node, terminalId };
-  }
+function setPaneTerminalId(node: PaneNode, paneId: string, terminalId: string): PaneNode {
+  if (node.id === paneId && node.type === "terminal") return { ...node, terminalId };
   if (node.type === "split") {
     return {
       ...node,
@@ -299,4 +327,34 @@ function setPaneTerminalId(
     };
   }
   return node;
+}
+
+// ── Session Serialization ────────────────────────────────────────
+
+function serializePaneTree(node: PaneNode): import("./types").PaneNodeData {
+  if (node.type === "terminal") {
+    return { type: "terminal", cwd: "", shell: "" };
+  }
+  return {
+    type: "split",
+    direction: node.direction,
+    ratio: node.ratio,
+    first: serializePaneTree(node.first),
+    second: serializePaneTree(node.second),
+  };
+}
+
+function restorePaneTree(data: import("./types").PaneNodeData): PaneNode {
+  const id = `pane-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  if (data.type === "terminal") {
+    return { type: "terminal", id, terminalId: "" };
+  }
+  return {
+    type: "split",
+    id,
+    direction: data.direction as "horizontal" | "vertical",
+    ratio: data.ratio,
+    first: restorePaneTree(data.first),
+    second: restorePaneTree(data.second),
+  };
 }
