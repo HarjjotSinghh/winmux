@@ -1,4 +1,9 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
+import {
+  isPermissionGranted,
+  requestPermission,
+  sendNotification,
+} from "@tauri-apps/plugin-notification";
 import type { Settings, Notification, SessionData } from "../types";
 
 // ── Terminal ──────────────────────────────────────────────────────
@@ -47,6 +52,37 @@ export async function getShellPath(): Promise<string> {
 
 export async function getCwd(id: string): Promise<string> {
   return invoke<string>("get_cwd", { id });
+}
+
+// ── System Notifications ──────────────────────────────────────
+
+export async function initNotifications(): Promise<void> {
+  let granted = await isPermissionGranted();
+  if (!granted) {
+    const result = await requestPermission();
+    granted = result === "granted";
+  }
+  if (!granted) {
+    console.warn("Notification permission not granted");
+  }
+}
+
+export async function showSystemNotification(
+  title: string,
+  body: string
+): Promise<void> {
+  try {
+    let granted = await isPermissionGranted();
+    if (!granted) {
+      const result = await requestPermission();
+      granted = result === "granted";
+    }
+    if (granted) {
+      sendNotification({ title, body });
+    }
+  } catch (e) {
+    console.warn("Failed to send notification:", e);
+  }
 }
 
 // ── Notifications ──────────────────────────────────────────────

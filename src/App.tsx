@@ -9,7 +9,7 @@ import WorkspacePresets from "./components/Sidebar/WorkspacePresets";
 import type { LayoutPreset } from "./components/Sidebar/WorkspacePresets";
 import { useWorkspaceStore, getTerminalIds } from "./stores/workspaceStore";
 import { useSettingsStore } from "./stores/settingsStore";
-import { closeTerminal, saveSession, loadSession } from "./lib/ipc";
+import { closeTerminal, saveSession, loadSession, initNotifications, showSystemNotification } from "./lib/ipc";
 import type { SessionData, PaneNode } from "./types";
 
 const AUTO_SAVE_INTERVAL = 5000; // 5 seconds
@@ -49,6 +49,7 @@ export default function App() {
     sessionRestoredRef.current = true;
 
     loadSettings();
+    initNotifications().catch(console.warn);
 
     loadSession().then((data) => {
       if (data && data.workspaces.length > 0) {
@@ -135,6 +136,12 @@ export default function App() {
     const unlisten = listen<{ terminal_id: string; title: string; body: string }>(
       "osc-notification",
       (event) => {
+        // Fire Windows toast notification
+        showSystemNotification(
+          event.payload.title || "WinMux",
+          event.payload.body || "Terminal notification"
+        );
+
         const ws = workspaces.find((w) => {
           const ids = getTerminalIds(w.paneTree);
           return ids.includes(event.payload.terminal_id);
@@ -237,6 +244,7 @@ export default function App() {
       { id: "toggleSidebar", label: "Toggle Sidebar", shortcut: "Ctrl+B", action: toggleSidebar },
       { id: "notifications", label: "Toggle Notifications", shortcut: "Ctrl+Shift+I", action: () => setNotifPanelVisible((v) => !v) },
       { id: "openBrowser", label: "Open Browser in Split", shortcut: "Ctrl+Shift+L", action: handleOpenBrowser },
+      { id: "testNotification", label: "Send Test Notification", action: () => showSystemNotification("WinMux", "Notifications are working!") },
       ...workspaces.map((w, i) => ({
         id: `workspace-${w.id}`,
         label: `Switch to ${w.name}`,
