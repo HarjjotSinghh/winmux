@@ -28,6 +28,7 @@ export default function App() {
     closePane,
     toggleSidebar,
     incrementUnread,
+    openBrowserInSplit,
     sidebarVisible,
     sidebarWidth,
   } = useWorkspaceStore();
@@ -178,6 +179,9 @@ export default function App() {
       } else if (e.ctrlKey && e.shiftKey && e.key === "I") {
         e.preventDefault();
         setNotifPanelVisible((v) => !v);
+      } else if (e.ctrlKey && e.shiftKey && e.key === "L") {
+        e.preventDefault();
+        handleOpenBrowser();
       } else if (e.ctrlKey && !e.shiftKey && e.key >= "1" && e.key <= "9") {
         const index = parseInt(e.key) - 1;
         if (index < workspaces.length) {
@@ -205,6 +209,17 @@ export default function App() {
     [activeWorkspace, splitPane]
   );
 
+  const handleOpenBrowser = useCallback(() => {
+    if (!activeWorkspace) return;
+    const activePane = findActivePaneNode(
+      activeWorkspace.paneTree,
+      activeWorkspace.activeTerminalId
+    );
+    if (activePane) {
+      openBrowserInSplit(activeWorkspace.id, activePane.id, "https://google.com");
+    }
+  }, [activeWorkspace, openBrowserInSplit]);
+
   const handleNewWorkspace = useCallback(
     (preset: LayoutPreset, name: string) => {
       const tree = preset.build();
@@ -231,6 +246,7 @@ export default function App() {
       { id: "splitDown", label: "Split Down", shortcut: "Ctrl+Shift+E", action: () => handleSplit("vertical") },
       { id: "toggleSidebar", label: "Toggle Sidebar", shortcut: "Ctrl+B", action: toggleSidebar },
       { id: "notifications", label: "Toggle Notifications", shortcut: "Ctrl+Shift+I", action: () => setNotifPanelVisible((v) => !v) },
+      { id: "openBrowser", label: "Open Browser in Split", shortcut: "Ctrl+Shift+L", action: handleOpenBrowser },
       ...workspaces.map((w, i) => ({
         id: `workspace-${w.id}`,
         label: `Switch to ${w.name}`,
@@ -306,6 +322,7 @@ function findActivePaneNode(
     if (!activeTerminalId || node.terminalId === activeTerminalId) return node;
     return null;
   }
+  if (node.type === "browser") return null;
   return findActivePaneNode(node.first, activeTerminalId) || findActivePaneNode(node.second, activeTerminalId);
 }
 
@@ -333,6 +350,9 @@ function setPaneTerminalId(node: PaneNode, paneId: string, terminalId: string): 
 
 function serializePaneTree(node: PaneNode): import("./types").PaneNodeData {
   if (node.type === "terminal") {
+    return { type: "terminal", cwd: "", shell: "" };
+  }
+  if (node.type === "browser") {
     return { type: "terminal", cwd: "", shell: "" };
   }
   return {

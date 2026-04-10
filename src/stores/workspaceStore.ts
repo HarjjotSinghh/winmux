@@ -32,6 +32,7 @@ interface WorkspaceStore {
     direction: "horizontal" | "vertical",
     newTerminalId: string
   ) => void;
+  openBrowserInSplit: (workspaceId: string, paneId: string, url: string) => void;
   closePane: (workspaceId: string, paneId: string) => string | null;
   setSidebarWidth: (width: number) => void;
   toggleSidebar: () => void;
@@ -150,6 +151,18 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         return {
           ...w,
           paneTree: splitNode(w.paneTree, paneId, direction, newTerminalId),
+        };
+      }),
+    }));
+  },
+
+  openBrowserInSplit: (workspaceId, paneId, url) => {
+    set((state) => ({
+      workspaces: state.workspaces.map((w) => {
+        if (w.id !== workspaceId) return w;
+        return {
+          ...w,
+          paneTree: splitNodeWithBrowser(w.paneTree, paneId, url),
         };
       }),
     }));
@@ -286,5 +299,39 @@ export function getTerminalIds(node: PaneNode): string[] {
   if (node.type === "terminal") {
     return node.terminalId ? [node.terminalId] : [];
   }
+  if (node.type === "browser") {
+    return [];
+  }
   return [...getTerminalIds(node.first), ...getTerminalIds(node.second)];
+}
+
+function splitNodeWithBrowser(
+  node: PaneNode,
+  targetId: string,
+  url: string
+): PaneNode {
+  if (node.id === targetId && node.type === "terminal") {
+    return {
+      type: "split",
+      id: genPaneId(),
+      direction: "horizontal",
+      ratio: 0.5,
+      first: node,
+      second: {
+        type: "browser",
+        id: genPaneId(),
+        url,
+      },
+    };
+  }
+
+  if (node.type === "split") {
+    return {
+      ...node,
+      first: splitNodeWithBrowser(node.first, targetId, url),
+      second: splitNodeWithBrowser(node.second, targetId, url),
+    };
+  }
+
+  return node;
 }
