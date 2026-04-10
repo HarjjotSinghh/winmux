@@ -11,6 +11,8 @@ export default function Sidebar({ onNewWorkspace }: SidebarProps) {
     activeWorkspaceId,
     setActiveWorkspace,
     removeWorkspace,
+    renameWorkspace,
+    setWorkspaceColor,
     sidebarWidth,
     sidebarVisible,
   } = useWorkspaceStore();
@@ -83,6 +85,8 @@ export default function Sidebar({ onNewWorkspace }: SidebarProps) {
                 ? () => removeWorkspace(workspace.id)
                 : undefined
             }
+            onRename={(name) => renameWorkspace(workspace.id, name)}
+            onColorChange={(color) => setWorkspaceColor(workspace.id, color)}
           />
         ))}
       </div>
