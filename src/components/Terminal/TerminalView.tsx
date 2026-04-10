@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { FitAddon } from "@xterm/addon-fit";
@@ -7,11 +7,9 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
 import { createTerminal, writeTerminal, resizeTerminal } from "../../lib/ipc";
 import { getXtermTheme } from "../../lib/theme";
-import { useSettingsStore } from "../../stores/settingsStore";
 
 interface TerminalViewProps {
   onReady: (terminalId: string) => void;
-  onExit?: () => void;
   shell?: string;
   cwd?: string;
   focused?: boolean;
@@ -20,7 +18,6 @@ interface TerminalViewProps {
 
 export default function TerminalView({
   onReady,
-  onExit: _onExit,
   shell,
   cwd,
   focused,
@@ -30,24 +27,31 @@ export default function TerminalView({
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const terminalIdRef = useRef<string | null>(null);
-  const initializedRef = useRef(false);
 
-  const settings = useSettingsStore((s) => s.settings);
+  // Store callbacks in refs so the init effect never re-runs
+  const onReadyRef = useRef(onReady);
+  onReadyRef.current = onReady;
+  const onFocusRef = useRef(onFocus);
+  onFocusRef.current = onFocus;
+  const shellRef = useRef(shell);
+  shellRef.current = shell;
+  const cwdRef = useRef(cwd);
+  cwdRef.current = cwd;
 
-  const initTerminal = useCallback(async () => {
-    if (initializedRef.current || !containerRef.current) return;
-    initializedRef.current = true;
+  // Initialize terminal ONCE on mount
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
 
     const term = new Terminal({
       cursorBlink: true,
       cursorStyle: "bar",
-      fontFamily: settings?.appearance.fontFamily ?? "Cascadia Code, Consolas, monospace",
-      fontSize: settings?.appearance.fontSize ?? 14,
+      fontFamily: "Cascadia Code, Consolas, Courier New, monospace",
+      fontSize: 14,
       lineHeight: 1.2,
       theme: getXtermTheme(),
       allowProposedApi: true,
       scrollback: 10000,
-      convertEol: true,
     });
 
     const fitAddon = new FitAddon();
@@ -55,75 +59,75 @@ export default function TerminalView({
     term.loadAddon(new WebLinksAddon());
     term.loadAddon(new Unicode11Addon());
 
-    term.open(containerRef.current);
+    term.open(container);
 
-    // Try WebGL, fall back to canvas
+    // Try WebGL, fall back silently to canvas
     try {
       term.loadAddon(new WebglAddon());
-    } catch (e) {
-      console.warn("WebGL addon failed, using canvas renderer:", e);
+    } catch {
+      // Canvas renderer is fine
     }
 
-    fitAddon.fit();
     terminalRef.current = term;
     fitAddonRef.current = fitAddon;
 
-    // Spawn PTY and connect
-    try {
-      const id = await createTerminal(
+    // Delayed fit — container needs a frame to have real dimensions
+    requestAnimationFrame(() => {
+      try {
+        fitAddon.fit();
+      } catch {
+        // Container might not be ready yet
+      }
+
+      // Spawn PTY after fit so we send correct cols/rows
+      createTerminal(
         (data) => term.write(data),
         {
-          shell,
-          cwd,
+          shell: shellRef.current,
+          cwd: cwdRef.current,
           cols: term.cols,
           rows: term.rows,
         }
-      );
+      )
+        .then((id) => {
+          terminalIdRef.current = id;
+          onReadyRef.current(id);
 
-      terminalIdRef.current = id;
-      onReady(id);
+          term.onData((data) => {
+            writeTerminal(id, data).catch(console.error);
+          });
 
-      // Send keyboard input to PTY
-      term.onData((data) => {
-        writeTerminal(id, data).catch(console.error);
-      });
+          term.onResize(({ cols, rows }) => {
+            resizeTerminal(id, cols, rows).catch(console.error);
+          });
 
-      // Handle resize
-      term.onResize(({ cols, rows }) => {
-        resizeTerminal(id, cols, rows).catch(console.error);
-      });
-    } catch (e) {
-      console.error("Failed to create terminal:", e);
-      term.write(`\r\nFailed to start terminal: ${e}\r\n`);
-    }
+          term.focus();
+        })
+        .catch((e) => {
+          term.writeln(`\x1b[31mFailed to start terminal: ${e}\x1b[0m`);
+          term.writeln("Check that powershell.exe or cmd.exe is available.");
+        });
+    });
 
-    // Focus handling
-    term.textarea?.addEventListener("focus", () => onFocus?.());
-  }, [shell, cwd, onReady, onFocus, settings?.appearance.fontFamily, settings?.appearance.fontSize]);
+    // Focus handler
+    term.textarea?.addEventListener("focus", () => onFocusRef.current?.());
 
-  useEffect(() => {
-    initTerminal();
-
-    return () => {
-      terminalRef.current?.dispose();
-    };
-  }, [initTerminal]);
-
-  // Handle resize on container size changes
-  useEffect(() => {
-    if (!containerRef.current || !fitAddonRef.current) return;
-
+    // Resize observer
     const observer = new ResizeObserver(() => {
       try {
-        fitAddonRef.current?.fit();
+        fitAddon.fit();
       } catch {
         // Ignore fit errors during rapid resize
       }
     });
+    observer.observe(container);
 
-    observer.observe(containerRef.current);
-    return () => observer.disconnect();
-  }, []);
+    return () => {
+      observer.disconnect();
+      term.dispose();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Empty deps — mount once, never re-run
 
   // Focus management
   useEffect(() => {

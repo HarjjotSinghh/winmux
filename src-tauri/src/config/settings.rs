@@ -109,13 +109,19 @@ impl Settings {
 }
 
 fn detect_default_shell() -> String {
-    // Prefer pwsh.exe (PowerShell 7+), fall back to powershell.exe, then cmd.exe
-    let candidates = [
-        "pwsh.exe",
-        "powershell.exe",
-        "cmd.exe",
+    // Check well-known install paths for pwsh.exe (PowerShell 7+)
+    let pwsh_paths = [
+        r"C:\Program Files\PowerShell\7\pwsh.exe",
+        r"C:\Program Files (x86)\PowerShell\7\pwsh.exe",
     ];
+    for path in &pwsh_paths {
+        if std::path::Path::new(path).exists() {
+            return path.to_string();
+        }
+    }
 
+    // Check PATH for pwsh, then powershell, then cmd
+    let candidates = ["pwsh.exe", "powershell.exe", "cmd.exe"];
     for candidate in &candidates {
         if which_exists(candidate) {
             return candidate.to_string();

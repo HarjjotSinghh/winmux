@@ -38,6 +38,12 @@ impl PtySession {
 
         let mut cmd = CommandBuilder::new(shell);
 
+        // Add shell-specific flags for cleaner startup
+        let shell_lower = shell.to_lowercase();
+        if shell_lower.contains("powershell") || shell_lower.contains("pwsh") {
+            cmd.arg("-NoLogo");
+        }
+
         // Set working directory
         let working_dir = if let Some(dir) = cwd {
             PathBuf::from(dir)

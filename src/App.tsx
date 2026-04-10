@@ -229,16 +229,6 @@ export default function App() {
     [createWorkspaceWithTree]
   );
 
-  const handleTerminalReady = useCallback(
-    (paneId: string, terminalId: string) => {
-      if (!activeWorkspace) return;
-      const updated = setPaneTerminalId(activeWorkspace.paneTree, paneId, terminalId);
-      updatePaneTree(activeWorkspace.id, updated);
-      setActiveTerminal(activeWorkspace.id, terminalId);
-    },
-    [activeWorkspace, updatePaneTree, setActiveTerminal]
-  );
-
   const commands = useMemo(
     () => [
       { id: "newWorkspace", label: "New Workspace...", shortcut: "Ctrl+Shift+T", action: () => setPresetPickerVisible(true) },
@@ -276,19 +266,33 @@ export default function App() {
           <Sidebar onNewWorkspace={() => setPresetPickerVisible(true)} />
         )}
 
+        {/* Render ALL workspaces, hide inactive ones — keeps terminals alive */}
         <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
-          {activeWorkspace && (
-            <SplitContainer
-              key={activeWorkspace.id}
-              node={activeWorkspace.paneTree}
-              onTerminalReady={handleTerminalReady}
-              onTerminalFocus={(terminalId) =>
-                setActiveTerminal(activeWorkspace.id, terminalId)
-              }
-              activeTerminalId={activeWorkspace.activeTerminalId}
-              shell={settings?.shell.defaultShell}
-            />
-          )}
+          {workspaces.map((ws) => (
+            <div
+              key={ws.id}
+              style={{
+                position: "absolute",
+                inset: 0,
+                visibility: ws.id === activeWorkspaceId ? "visible" : "hidden",
+                zIndex: ws.id === activeWorkspaceId ? 1 : 0,
+              }}
+            >
+              <SplitContainer
+                node={ws.paneTree}
+                onTerminalReady={(paneId, terminalId) => {
+                  const updated = setPaneTerminalId(ws.paneTree, paneId, terminalId);
+                  updatePaneTree(ws.id, updated);
+                  setActiveTerminal(ws.id, terminalId);
+                }}
+                onTerminalFocus={(terminalId) =>
+                  setActiveTerminal(ws.id, terminalId)
+                }
+                activeTerminalId={ws.id === activeWorkspaceId ? ws.activeTerminalId : null}
+                shell={settings?.shell.defaultShell}
+              />
+            </div>
+          ))}
         </div>
 
         <NotificationPanel
