@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import type { PaneNode } from "../../types";
 import TerminalView from "../Terminal/TerminalView";
+import BrowserView from "../Browser/BrowserView";
 
 interface SplitContainerProps {
   node: PaneNode;
@@ -28,6 +29,14 @@ export default function SplitContainer({
             if (node.terminalId) onTerminalFocus(node.terminalId);
           }}
         />
+      </div>
+    );
+  }
+
+  if (node.type === "browser") {
+    return (
+      <div style={{ width: "100%", height: "100%", position: "relative" }}>
+        <BrowserView initialUrl={node.url} />
       </div>
     );
   }

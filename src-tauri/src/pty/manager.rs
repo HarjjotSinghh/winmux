@@ -45,8 +45,8 @@ impl PtyManager {
         let env_vars = vec![
             ("WINMUX_TERMINAL_ID".to_string(), id.clone()),
             (
-                "WINMUX_IPC_PORT".to_string(),
-                "19542".to_string(),
+                "WINMUX_PIPE_NAME".to_string(),
+                r"\\.\pipe\winmux".to_string(),
             ),
         ];
 

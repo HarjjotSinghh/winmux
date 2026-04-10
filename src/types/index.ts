@@ -2,6 +2,7 @@
 
 export type PaneNode =
   | { type: "terminal"; id: string; terminalId: string }
+  | { type: "browser"; id: string; url: string }
   | {
       type: "split";
       id: string;
