@@ -20,88 +20,74 @@ export default function Sidebar({ onNewWorkspace }: SidebarProps) {
   if (!sidebarVisible) return null;
 
   return (
-    <div
-      style={{
-        width: sidebarWidth,
-        minWidth: sidebarWidth,
-        height: "100%",
-        backgroundColor: "#010409",
-        borderRight: "1px solid #21262d",
+    <div style={{
+      width: sidebarWidth,
+      minWidth: sidebarWidth,
+      height: "100%",
+      background: "#0E0E0E",
+      borderRight: "1px solid #1F1F1F",
+      display: "flex",
+      flexDirection: "column",
+    }}>
+      <div style={{
+        padding: "14px 14px 10px",
         display: "flex",
-        flexDirection: "column",
-        overflow: "hidden",
-      }}
-    >
-      {/* Sidebar header */}
-      <div
-        style={{
-          padding: "12px 16px 8px",
+        justifyContent: "space-between",
+        alignItems: "center",
+      }}>
+        <span style={{
           fontSize: "11px",
-          fontWeight: 600,
+          fontWeight: 500,
           textTransform: "uppercase",
-          letterSpacing: "0.05em",
-          color: "#8b949e",
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-        }}
-      >
-        <span>Workspaces</span>
+          letterSpacing: "0.06em",
+          color: "#525252",
+        }}>
+          Workspaces
+        </span>
         <button
           onClick={onNewWorkspace}
-          title="New Workspace (Ctrl+Shift+T)"
+          aria-label="New Workspace"
           style={{
+            width: "20px",
+            height: "20px",
+            borderRadius: "4px",
+            border: "1px solid #1F1F1F",
             background: "none",
-            border: "none",
-            color: "#8b949e",
+            color: "#525252",
             cursor: "pointer",
-            fontSize: "16px",
-            padding: "0 4px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: "14px",
             lineHeight: 1,
+            transition: "all 150ms ease",
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.borderColor = "#3B82F6";
+            e.currentTarget.style.color = "#3B82F6";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.borderColor = "#1F1F1F";
+            e.currentTarget.style.color = "#525252";
           }}
         >
           +
         </button>
       </div>
 
-      {/* Workspace list */}
-      <div
-        style={{
-          flex: 1,
-          overflowY: "auto",
-          overflowX: "hidden",
-          padding: "4px 8px",
-        }}
-      >
-        {workspaces.map((workspace, index) => (
+      <div style={{ flex: 1, overflowY: "auto", padding: "0 6px 6px" }}>
+        {workspaces.map((ws, i) => (
           <WorkspaceTab
-            key={workspace.id}
-            workspace={workspace}
-            index={index}
-            isActive={workspace.id === activeWorkspaceId}
-            onClick={() => setActiveWorkspace(workspace.id)}
-            onClose={
-              workspaces.length > 1
-                ? () => removeWorkspace(workspace.id)
-                : undefined
-            }
-            onRename={(name) => renameWorkspace(workspace.id, name)}
-            onColorChange={(color) => setWorkspaceColor(workspace.id, color)}
+            key={ws.id}
+            workspace={ws}
+            index={i}
+            isActive={ws.id === activeWorkspaceId}
+            onClick={() => setActiveWorkspace(ws.id)}
+            onClose={workspaces.length > 1 ? () => removeWorkspace(ws.id) : undefined}
+            onRename={(name) => renameWorkspace(ws.id, name)}
+            onColorChange={(color) => setWorkspaceColor(ws.id, color)}
           />
         ))}
-      </div>
-
-      {/* Sidebar footer */}
-      <div
-        style={{
-          padding: "8px 12px",
-          borderTop: "1px solid #21262d",
-          fontSize: "11px",
-          color: "#484f58",
-          textAlign: "center",
-        }}
-      >
-        WinMux v0.1.0
       </div>
     </div>
   );

@@ -7,128 +7,97 @@ export default function TitleBar() {
 
   useEffect(() => {
     windowIsMaximized().then(setMaximized).catch(() => {});
-
     const unlisten = getCurrentWindow().onResized(() => {
       windowIsMaximized().then(setMaximized).catch(() => {});
     });
-
-    return () => {
-      unlisten.then((fn) => fn());
-    };
+    return () => { unlisten.then((fn) => fn()); };
   }, []);
-
-  const startDrag = async () => {
-    await getCurrentWindow().startDragging();
-  };
 
   return (
     <div
+      onMouseDown={() => getCurrentWindow().startDragging()}
       style={{
-        height: "32px",
-        minHeight: "32px",
-        backgroundColor: "#010409",
+        height: "36px",
+        minHeight: "36px",
+        background: "#0A0A0A",
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
-        borderBottom: "1px solid #21262d",
-        WebkitAppRegion: "drag",
+        borderBottom: "1px solid #1F1F1F",
         userSelect: "none",
-      } as React.CSSProperties}
-      onMouseDown={startDrag}
+      }}
     >
-      {/* App name */}
-      <div
-        style={{
-          paddingLeft: "16px",
-          fontSize: "12px",
-          fontWeight: 600,
-          color: "#8b949e",
-          letterSpacing: "0.03em",
-          display: "flex",
-          alignItems: "center",
-          gap: "6px",
-        }}
-      >
-        <span style={{ color: "#58a6ff", fontSize: "14px" }}>W</span>
-        <span>WinMux</span>
+      <div style={{
+        paddingLeft: "14px",
+        fontSize: "12px",
+        fontWeight: 500,
+        color: "#737373",
+        letterSpacing: "0.02em",
+      }}>
+        WinMux
       </div>
 
-      {/* Window controls */}
       <div
-        style={{
-          display: "flex",
-          height: "100%",
-          WebkitAppRegion: "no-drag",
-        } as React.CSSProperties}
+        style={{ display: "flex", height: "100%" }}
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <WindowButton onClick={windowMinimize} title="Minimize">
+        <WinBtn onClick={windowMinimize} label="Minimize">
           <svg width="10" height="1" viewBox="0 0 10 1">
             <rect width="10" height="1" fill="currentColor" />
           </svg>
-        </WindowButton>
-        <WindowButton onClick={() => windowMaximize().then(() => setMaximized(!maximized))} title={maximized ? "Restore" : "Maximize"}>
+        </WinBtn>
+        <WinBtn onClick={() => windowMaximize().then(() => setMaximized(!maximized))} label={maximized ? "Restore" : "Maximize"}>
           {maximized ? (
             <svg width="10" height="10" viewBox="0 0 10 10">
               <path d="M2 0h8v8H8v2H0V2h2V0zm1 1v1h6v6h1V1H3zM1 3v6h6V3H1z" fill="currentColor" />
             </svg>
           ) : (
             <svg width="10" height="10" viewBox="0 0 10 10">
-              <rect x="0" y="0" width="10" height="10" rx="0" fill="none" stroke="currentColor" strokeWidth="1" />
+              <rect width="10" height="10" fill="none" stroke="currentColor" strokeWidth="1" />
             </svg>
           )}
-        </WindowButton>
-        <WindowButton
-          onClick={windowClose}
-          title="Close"
-          hoverBg="#e81123"
-          hoverColor="#ffffff"
-        >
+        </WinBtn>
+        <WinBtn onClick={windowClose} label="Close" danger>
           <svg width="10" height="10" viewBox="0 0 10 10">
             <path d="M1 1l8 8M9 1l-8 8" stroke="currentColor" strokeWidth="1.2" />
           </svg>
-        </WindowButton>
+        </WinBtn>
       </div>
     </div>
   );
 }
 
-function WindowButton({
-  children,
-  onClick,
-  title,
-  hoverBg = "#21262d",
-  hoverColor = "#e6edf3",
-}: {
+function WinBtn({ children, onClick, label, danger }: {
   children: React.ReactNode;
   onClick: () => void;
-  title: string;
-  hoverBg?: string;
-  hoverColor?: string;
+  label: string;
+  danger?: boolean;
 }) {
   return (
     <button
       onClick={onClick}
-      title={title}
+      aria-label={label}
       style={{
         width: "46px",
         height: "100%",
         border: "none",
         background: "none",
-        color: "#8b949e",
+        color: "#525252",
         cursor: "pointer",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        transition: "all 0.1s",
+        transition: "all 150ms ease",
       }}
       onMouseEnter={(e) => {
-        (e.currentTarget as HTMLButtonElement).style.backgroundColor = hoverBg;
-        (e.currentTarget as HTMLButtonElement).style.color = hoverColor;
+        const el = e.currentTarget;
+        el.style.background = danger ? "#EF4444" : "#1A1A1A";
+        el.style.color = danger ? "#fff" : "#E5E5E5";
       }}
       onMouseLeave={(e) => {
-        (e.currentTarget as HTMLButtonElement).style.backgroundColor = "transparent";
-        (e.currentTarget as HTMLButtonElement).style.color = "#8b949e";
+        const el = e.currentTarget;
+        el.style.background = "none";
+        el.style.color = "#525252";
       }}
     >
       {children}

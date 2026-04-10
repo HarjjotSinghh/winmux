@@ -13,212 +13,155 @@ interface WorkspaceTabProps {
 }
 
 export default function WorkspaceTab({
-  workspace,
-  index,
-  isActive,
-  onClick,
-  onClose,
-  onRename,
-  onColorChange,
+  workspace, index, isActive, onClick, onClose, onRename, onColorChange,
 }: WorkspaceTabProps) {
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(workspace.name);
-  const [showColorPicker, setShowColorPicker] = useState(false);
+  const [showColor, setShowColor] = useState(false);
+  const [hovered, setHovered] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (editing && inputRef.current) {
-      inputRef.current.focus();
-      inputRef.current.select();
-    }
+    if (editing) { inputRef.current?.focus(); inputRef.current?.select(); }
   }, [editing]);
 
-  const commitRename = () => {
-    const trimmed = editValue.trim();
-    if (trimmed && trimmed !== workspace.name) {
-      onRename(trimmed);
-    } else {
-      setEditValue(workspace.name);
-    }
+  const commit = () => {
+    const v = editValue.trim();
+    if (v && v !== workspace.name) onRename(v);
+    else setEditValue(workspace.name);
     setEditing(false);
   };
 
   return (
     <div
       onClick={onClick}
-      onDoubleClick={(e) => {
-        e.stopPropagation();
-        setEditing(true);
-        setEditValue(workspace.name);
-      }}
+      onDoubleClick={(e) => { e.stopPropagation(); setEditing(true); setEditValue(workspace.name); }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       style={{
         display: "flex",
         alignItems: "center",
-        padding: "8px 10px",
-        marginBottom: "2px",
+        gap: "10px",
+        padding: "7px 8px",
+        marginBottom: "1px",
         borderRadius: "6px",
         cursor: "pointer",
-        backgroundColor: isActive ? "#161b22" : "transparent",
-        border: isActive ? "1px solid #30363d" : "1px solid transparent",
-        transition: "all 0.15s ease",
+        background: isActive ? "#1A1A1A" : hovered ? "#131313" : "transparent",
+        transition: "background 150ms ease",
         position: "relative",
-        gap: "10px",
-      }}
-      onMouseEnter={(e) => {
-        if (!isActive)
-          (e.currentTarget as HTMLDivElement).style.backgroundColor = "#0d1117";
-      }}
-      onMouseLeave={(e) => {
-        if (!isActive)
-          (e.currentTarget as HTMLDivElement).style.backgroundColor =
-            "transparent";
       }}
     >
-      {/* Color indicator — click to change color */}
+      {/* Accent dot */}
       <div
-        onClick={(e) => {
-          e.stopPropagation();
-          setShowColorPicker((v) => !v);
-        }}
+        onClick={(e) => { e.stopPropagation(); setShowColor(!showColor); }}
         style={{
-          width: "3px",
-          height: "24px",
-          borderRadius: "2px",
-          backgroundColor: isActive ? workspace.color : "#30363d",
+          width: "6px",
+          height: "6px",
+          borderRadius: "50%",
+          background: isActive ? workspace.color : "#333",
           flexShrink: 0,
-          transition: "background-color 0.15s",
           cursor: "pointer",
+          transition: "background 150ms ease",
           position: "relative",
         }}
-        title="Change color"
       >
-        {showColorPicker && (
+        {showColor && (
           <ColorPicker
             currentColor={workspace.color}
             onSelect={onColorChange}
-            onClose={() => setShowColorPicker(false)}
+            onClose={() => setShowColor(false)}
           />
         )}
       </div>
 
-      {/* Content */}
+      {/* Name */}
       <div style={{ flex: 1, minWidth: 0 }}>
         {editing ? (
           <input
             ref={inputRef}
             value={editValue}
             onChange={(e) => setEditValue(e.target.value)}
-            onBlur={commitRename}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") commitRename();
-              if (e.key === "Escape") {
-                setEditValue(workspace.name);
-                setEditing(false);
-              }
-            }}
+            onBlur={commit}
+            onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") { setEditValue(workspace.name); setEditing(false); } }}
             onClick={(e) => e.stopPropagation()}
             style={{
               width: "100%",
-              padding: "1px 4px",
-              backgroundColor: "#0d1117",
-              border: "1px solid #58a6ff",
+              padding: "0 2px",
+              background: "#0A0A0A",
+              border: "1px solid #3B82F6",
               borderRadius: "3px",
-              color: "#e6edf3",
-              fontSize: "13px",
-              fontWeight: 600,
+              color: "#E5E5E5",
+              fontSize: "12px",
               outline: "none",
               fontFamily: "inherit",
             }}
           />
         ) : (
-          <div
-            style={{
-              fontSize: "13px",
-              fontWeight: isActive ? 600 : 400,
-              color: isActive ? "#e6edf3" : "#8b949e",
+          <>
+            <div style={{
+              fontSize: "12px",
+              fontWeight: isActive ? 500 : 400,
+              color: isActive ? "#E5E5E5" : "#737373",
               whiteSpace: "nowrap",
               overflow: "hidden",
               textOverflow: "ellipsis",
-            }}
-          >
-            {workspace.name}
-          </div>
-        )}
-        {(workspace.cwd || workspace.gitBranch) && (
-          <div
-            style={{
-              fontSize: "11px",
-              color: "#484f58",
-              whiteSpace: "nowrap",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              marginTop: "2px",
-            }}
-          >
+            }}>
+              {workspace.name}
+            </div>
             {workspace.gitBranch && (
-              <span style={{ color: "#3fb950", marginRight: "6px" }}>
+              <div style={{ fontSize: "10px", color: "#404040", marginTop: "1px" }}>
                 {workspace.gitBranch}
-              </span>
+              </div>
             )}
-            {workspace.cwd && <span>{workspace.cwd.split("\\").pop()}</span>}
-          </div>
+          </>
         )}
       </div>
 
-      {/* Keyboard shortcut hint */}
+      {/* Shortcut hint */}
       {index < 9 && !editing && (
-        <span style={{ fontSize: "10px", color: "#484f58", flexShrink: 0 }}>
-          ^{index + 1}
+        <span style={{ fontSize: "10px", color: "#333", flexShrink: 0, fontFamily: "monospace" }}>
+          {index + 1}
         </span>
       )}
 
-      {/* Notification badge */}
+      {/* Badge */}
       {workspace.unreadCount > 0 && (
-        <div
-          style={{
-            width: "18px",
-            height: "18px",
-            borderRadius: "9px",
-            backgroundColor: "#58a6ff",
-            color: "#ffffff",
-            fontSize: "10px",
-            fontWeight: 700,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            flexShrink: 0,
-          }}
-        >
+        <div style={{
+          minWidth: "16px",
+          height: "16px",
+          borderRadius: "8px",
+          background: "#3B82F6",
+          color: "#fff",
+          fontSize: "9px",
+          fontWeight: 600,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: "0 4px",
+          flexShrink: 0,
+        }}>
           {workspace.unreadCount > 9 ? "9+" : workspace.unreadCount}
         </div>
       )}
 
-      {/* Close button */}
-      {onClose && !editing && (
+      {/* Close */}
+      {onClose && !editing && hovered && (
         <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onClose();
-          }}
+          onClick={(e) => { e.stopPropagation(); onClose(); }}
+          aria-label="Close workspace"
           style={{
             background: "none",
             border: "none",
-            color: "#484f58",
+            color: "#404040",
             cursor: "pointer",
-            fontSize: "14px",
-            padding: "0 2px",
+            fontSize: "12px",
+            padding: "0",
             lineHeight: 1,
-            opacity: 0.6,
             flexShrink: 0,
+            transition: "color 150ms",
           }}
-          onMouseEnter={(e) => {
-            (e.currentTarget as HTMLButtonElement).style.opacity = "1";
-            (e.currentTarget as HTMLButtonElement).style.color = "#ff7b72";
-          }}
-          onMouseLeave={(e) => {
-            (e.currentTarget as HTMLButtonElement).style.opacity = "0.6";
-            (e.currentTarget as HTMLButtonElement).style.color = "#484f58";
-          }}
+          onMouseEnter={(e) => { e.currentTarget.style.color = "#EF4444"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.color = "#404040"; }}
         >
           x
         </button>

@@ -143,7 +143,7 @@ export default function TerminalView({
       style={{
         width: "100%",
         height: "100%",
-        backgroundColor: "#0d1117",
+        backgroundColor: "#0A0A0A",
         overflow: "hidden",
       }}
     />
