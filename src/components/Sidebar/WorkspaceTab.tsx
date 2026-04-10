@@ -1,4 +1,6 @@
+import { useState, useRef, useEffect } from "react";
 import type { Workspace } from "../../types";
+import ColorPicker from "./ColorPicker";
 
 interface WorkspaceTabProps {
   workspace: Workspace;
@@ -6,6 +8,8 @@ interface WorkspaceTabProps {
   isActive: boolean;
   onClick: () => void;
   onClose?: () => void;
+  onRename: (name: string) => void;
+  onColorChange: (color: string) => void;
 }
 
 export default function WorkspaceTab({
@@ -14,10 +18,39 @@ export default function WorkspaceTab({
   isActive,
   onClick,
   onClose,
+  onRename,
+  onColorChange,
 }: WorkspaceTabProps) {
+  const [editing, setEditing] = useState(false);
+  const [editValue, setEditValue] = useState(workspace.name);
+  const [showColorPicker, setShowColorPicker] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editing && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [editing]);
+
+  const commitRename = () => {
+    const trimmed = editValue.trim();
+    if (trimmed && trimmed !== workspace.name) {
+      onRename(trimmed);
+    } else {
+      setEditValue(workspace.name);
+    }
+    setEditing(false);
+  };
+
   return (
     <div
       onClick={onClick}
+      onDoubleClick={(e) => {
+        e.stopPropagation();
+        setEditing(true);
+        setEditValue(workspace.name);
+      }}
       style={{
         display: "flex",
         alignItems: "center",
@@ -32,18 +65,21 @@ export default function WorkspaceTab({
         gap: "10px",
       }}
       onMouseEnter={(e) => {
-        if (!isActive) {
+        if (!isActive)
           (e.currentTarget as HTMLDivElement).style.backgroundColor = "#0d1117";
-        }
       }}
       onMouseLeave={(e) => {
-        if (!isActive) {
-          (e.currentTarget as HTMLDivElement).style.backgroundColor = "transparent";
-        }
+        if (!isActive)
+          (e.currentTarget as HTMLDivElement).style.backgroundColor =
+            "transparent";
       }}
     >
-      {/* Color indicator */}
+      {/* Color indicator — click to change color */}
       <div
+        onClick={(e) => {
+          e.stopPropagation();
+          setShowColorPicker((v) => !v);
+        }}
         style={{
           width: "3px",
           height: "24px",
@@ -51,23 +87,63 @@ export default function WorkspaceTab({
           backgroundColor: isActive ? workspace.color : "#30363d",
           flexShrink: 0,
           transition: "background-color 0.15s",
+          cursor: "pointer",
+          position: "relative",
         }}
-      />
+        title="Change color"
+      >
+        {showColorPicker && (
+          <ColorPicker
+            currentColor={workspace.color}
+            onSelect={onColorChange}
+            onClose={() => setShowColorPicker(false)}
+          />
+        )}
+      </div>
 
       {/* Content */}
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div
-          style={{
-            fontSize: "13px",
-            fontWeight: isActive ? 600 : 400,
-            color: isActive ? "#e6edf3" : "#8b949e",
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-          }}
-        >
-          {workspace.name}
-        </div>
+        {editing ? (
+          <input
+            ref={inputRef}
+            value={editValue}
+            onChange={(e) => setEditValue(e.target.value)}
+            onBlur={commitRename}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") commitRename();
+              if (e.key === "Escape") {
+                setEditValue(workspace.name);
+                setEditing(false);
+              }
+            }}
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "100%",
+              padding: "1px 4px",
+              backgroundColor: "#0d1117",
+              border: "1px solid #58a6ff",
+              borderRadius: "3px",
+              color: "#e6edf3",
+              fontSize: "13px",
+              fontWeight: 600,
+              outline: "none",
+              fontFamily: "inherit",
+            }}
+          />
+        ) : (
+          <div
+            style={{
+              fontSize: "13px",
+              fontWeight: isActive ? 600 : 400,
+              color: isActive ? "#e6edf3" : "#8b949e",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+          >
+            {workspace.name}
+          </div>
+        )}
         {(workspace.cwd || workspace.gitBranch) && (
           <div
             style={{
@@ -84,22 +160,14 @@ export default function WorkspaceTab({
                 {workspace.gitBranch}
               </span>
             )}
-            {workspace.cwd && (
-              <span>{workspace.cwd.split("\\").pop()}</span>
-            )}
+            {workspace.cwd && <span>{workspace.cwd.split("\\").pop()}</span>}
           </div>
         )}
       </div>
 
       {/* Keyboard shortcut hint */}
-      {index < 9 && (
-        <span
-          style={{
-            fontSize: "10px",
-            color: "#484f58",
-            flexShrink: 0,
-          }}
-        >
+      {index < 9 && !editing && (
+        <span style={{ fontSize: "10px", color: "#484f58", flexShrink: 0 }}>
           ^{index + 1}
         </span>
       )}
@@ -126,7 +194,7 @@ export default function WorkspaceTab({
       )}
 
       {/* Close button */}
-      {onClose && (
+      {onClose && !editing && (
         <button
           onClick={(e) => {
             e.stopPropagation();

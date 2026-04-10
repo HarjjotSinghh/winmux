@@ -19,9 +19,11 @@ interface WorkspaceStore {
 
   // Actions
   createWorkspace: (name?: string) => Workspace;
+  createWorkspaceWithTree: (name: string, tree: PaneNode) => Workspace;
   removeWorkspace: (id: string) => void;
   setActiveWorkspace: (id: string) => void;
   renameWorkspace: (id: string, name: string) => void;
+  setWorkspaceColor: (id: string, color: string) => void;
   setActiveTerminal: (workspaceId: string, terminalId: string) => void;
   updatePaneTree: (workspaceId: string, tree: PaneNode) => void;
   splitPane: (
@@ -72,6 +74,28 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     return workspace;
   },
 
+  createWorkspaceWithTree: (name: string, tree: PaneNode) => {
+    const id = genId();
+    const index = get().workspaces.length;
+    const workspace: Workspace = {
+      id,
+      name: name || `Workspace ${index + 1}`,
+      color: getWorkspaceColor(index),
+      paneTree: tree,
+      activeTerminalId: null,
+      gitBranch: null,
+      cwd: null,
+      unreadCount: 0,
+    };
+
+    set((state) => ({
+      workspaces: [...state.workspaces, workspace],
+      activeWorkspaceId: id,
+    }));
+
+    return workspace;
+  },
+
   removeWorkspace: (id) => {
     set((state) => {
       const filtered = state.workspaces.filter((w) => w.id !== id);
@@ -91,6 +115,14 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     set((state) => ({
       workspaces: state.workspaces.map((w) =>
         w.id === id ? { ...w, name } : w
+      ),
+    }));
+  },
+
+  setWorkspaceColor: (id, color) => {
+    set((state) => ({
+      workspaces: state.workspaces.map((w) =>
+        w.id === id ? { ...w, color } : w
       ),
     }));
   },
