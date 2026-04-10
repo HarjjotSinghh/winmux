@@ -1,7 +1,6 @@
 use std::io::{BufRead, BufReader, Write};
-use std::net::TcpStream;
 
-const IPC_ADDR: &str = "127.0.0.1:19542";
+const PIPE_NAME: &str = r"\\.\pipe\winmux";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -110,7 +109,10 @@ fn send_rpc(
     method: &str,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-    let mut stream = TcpStream::connect(IPC_ADDR)?;
+    let mut stream = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(PIPE_NAME)?;
 
     let request = serde_json::json!({
         "id": "1",
