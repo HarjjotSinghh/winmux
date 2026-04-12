@@ -3,6 +3,11 @@
 All notable changes to WinMux are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-04-12
+
+### Fixed
+- Ctrl+Click on links in the terminal now opens the user's default browser via `@tauri-apps/plugin-shell` instead of trying to navigate the embedded webview.
+
 ## [0.2.0] - 2026-04-12
 
 ### Added

@@ -4,6 +4,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { open as openExternal } from "@tauri-apps/plugin-shell";
 import "@xterm/xterm/css/xterm.css";
 import {
   createTerminal,
@@ -79,7 +80,11 @@ export default function TerminalView({
 
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
-    term.loadAddon(new WebLinksAddon());
+    term.loadAddon(
+      new WebLinksAddon((_event, uri) => {
+        openExternal(uri).catch((e) => console.error("open url failed:", e));
+      })
+    );
     term.loadAddon(new Unicode11Addon());
 
     // Ctrl+Shift+C to copy selection, Ctrl+Shift+V to paste.
