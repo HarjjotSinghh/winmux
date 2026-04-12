@@ -36,6 +36,8 @@ pub enum PaneData {
     Terminal {
         cwd: String,
         shell: String,
+        #[serde(default)]
+        scrollback: String,
     },
     Split {
         direction: String,
@@ -86,6 +88,7 @@ impl Default for SessionData {
                         .to_string_lossy()
                         .to_string(),
                     shell: "pwsh.exe".to_string(),
+                    scrollback: String::new(),
                 },
             }],
             active_workspace: 0,

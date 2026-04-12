@@ -1,7 +1,19 @@
 // ── Pane Tree ──────────────────────────────────────────────────────
 
+export interface TerminalRestoreData {
+  cwd: string;
+  shell: string;
+  scrollbackBase64: string;
+  savedAt: number;
+}
+
 export type PaneNode =
-  | { type: "terminal"; id: string; terminalId: string }
+  | {
+      type: "terminal";
+      id: string;
+      terminalId: string;
+      restore?: TerminalRestoreData;
+    }
   | { type: "browser"; id: string; url: string }
   | {
       type: "split";
@@ -90,7 +102,7 @@ export interface WorkspaceData {
 }
 
 export type PaneNodeData =
-  | { type: "terminal"; cwd: string; shell: string }
+  | { type: "terminal"; cwd: string; shell: string; scrollback?: string }
   | {
       type: "split";
       direction: string;

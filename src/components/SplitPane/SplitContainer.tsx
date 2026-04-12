@@ -25,7 +25,9 @@ export default function SplitContainer({
       >
         <TerminalView
           onReady={(tid) => onTerminalReady(node.id, tid)}
-          shell={shell}
+          shell={node.restore?.shell || shell}
+          cwd={node.restore?.cwd}
+          restore={node.restore}
           focused={node.terminalId === activeTerminalId}
           onFocus={() => { if (node.terminalId) onTerminalFocus(node.terminalId); }}
         />

@@ -72,6 +72,18 @@ pub fn get_cwd(pty_manager: State<PtyState>, id: String) -> Result<String, Strin
 }
 
 #[tauri::command]
+pub fn get_scrollback(pty_manager: State<PtyState>, id: String) -> Result<Vec<u8>, String> {
+    let mgr = pty_manager.lock().map_err(|e| e.to_string())?;
+    mgr.get_scrollback(&id)
+}
+
+#[tauri::command]
+pub fn get_terminal_shell(pty_manager: State<PtyState>, id: String) -> Result<String, String> {
+    let mgr = pty_manager.lock().map_err(|e| e.to_string())?;
+    mgr.get_shell(&id)
+}
+
+#[tauri::command]
 pub fn get_shell_path(config: State<ConfigState>) -> Result<String, String> {
     let settings = config.lock().map_err(|e| e.to_string())?;
     Ok(settings.shell.default_shell.clone())
@@ -252,4 +264,10 @@ pub fn window_close(window: WebviewWindow) -> Result<(), String> {
 #[tauri::command]
 pub fn window_is_maximized(window: WebviewWindow) -> Result<bool, String> {
     window.is_maximized().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn quit_app(app: AppHandle) {
+    log::info!("Explicit quit requested");
+    app.exit(0);
 }

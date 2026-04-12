@@ -49,6 +49,15 @@ export async function getCwd(id: string): Promise<string> {
   return invoke<string>("get_cwd", { id });
 }
 
+export async function getScrollback(id: string): Promise<Uint8Array> {
+  const bytes = await invoke<number[]>("get_scrollback", { id });
+  return new Uint8Array(bytes);
+}
+
+export async function getTerminalShell(id: string): Promise<string> {
+  return invoke<string>("get_terminal_shell", { id });
+}
+
 // ── System Notifications ──────────────────────────────────────
 
 export async function initNotifications(): Promise<void> {
@@ -127,4 +136,8 @@ export async function windowClose(): Promise<void> {
 
 export async function windowIsMaximized(): Promise<boolean> {
   return invoke<boolean>("window_is_maximized");
+}
+
+export async function quitApp(): Promise<void> {
+  return invoke("quit_app");
 }

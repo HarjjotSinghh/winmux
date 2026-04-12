@@ -11,11 +11,20 @@ import UpdateBanner from "./components/Updater/UpdateBanner";
 import type { LayoutPreset } from "./components/Sidebar/WorkspacePresets";
 import { useWorkspaceStore, getTerminalIds } from "./stores/workspaceStore";
 import { useSettingsStore } from "./stores/settingsStore";
-import { closeTerminal, saveSession, loadSession, initNotifications, showSystemNotification, writeTerminal } from "./lib/ipc";
-import type { SessionData, PaneNode } from "./types";
+import { closeTerminal, saveSession, loadSession, initNotifications, showSystemNotification, writeTerminal, getCwd, getTerminalShell, getScrollback } from "./lib/ipc";
+import type { SessionData, PaneNode, PaneNodeData } from "./types";
 
 function quotePath(p: string): string {
   return /[\s"']/.test(p) ? `"${p.replace(/"/g, '\\"')}"` : p;
+}
+
+function uint8ToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunk)));
+  }
+  return btoa(binary);
 }
 
 const AUTO_SAVE_INTERVAL = 5000; // 5 seconds
@@ -59,9 +68,9 @@ export default function App() {
 
     loadSession().then((data) => {
       if (data && data.workspaces.length > 0) {
-        // Restore workspaces from saved session
+        const savedAt = Date.now();
         data.workspaces.forEach((ws) => {
-          createWorkspaceWithTree(ws.name, restorePaneTree(ws.paneTree));
+          createWorkspaceWithTree(ws.name, restorePaneTree(ws.paneTree, savedAt));
         });
       } else {
         createWorkspace();
@@ -71,47 +80,46 @@ export default function App() {
     });
   }, [loadSettings, createWorkspace, createWorkspaceWithTree]);
 
-  // ── Auto-save session every 5 seconds ──────────────────────────
+  // ── Auto-save session ──────────────────────────────────────────
+  // Light saves (structure + cwd) every 5s; heavy save (with scrollback)
+  // on visibility change (window hide) and beforeunload.
   useEffect(() => {
     if (workspaces.length === 0) return;
 
-    const timer = setInterval(() => {
-      const sessionData: SessionData = {
-        workspaces: workspaces.map((ws) => ({
-          name: ws.name,
-          color: ws.color,
-          paneTree: serializePaneTree(ws.paneTree),
-        })),
-        activeWorkspace: workspaces.findIndex((w) => w.id === activeWorkspaceId),
-        sidebarWidth,
-        sidebarVisible,
-        windowState: { x: 0, y: 0, width: 1280, height: 800, maximized: false },
-      };
-      saveSession(sessionData).catch(() => {});
-    }, AUTO_SAVE_INTERVAL);
-
-    return () => clearInterval(timer);
-  }, [workspaces, activeWorkspaceId, sidebarWidth, sidebarVisible]);
-
-  // ── Also save on beforeunload ──────────────────────────────────
-  useEffect(() => {
-    const handler = () => {
-      if (workspaces.length === 0) return;
-      const sessionData: SessionData = {
-        workspaces: workspaces.map((ws) => ({
-          name: ws.name,
-          color: ws.color,
-          paneTree: serializePaneTree(ws.paneTree),
-        })),
-        activeWorkspace: workspaces.findIndex((w) => w.id === activeWorkspaceId),
-        sidebarWidth,
-        sidebarVisible,
-        windowState: { x: 0, y: 0, width: 1280, height: 800, maximized: false },
-      };
-      saveSession(sessionData).catch(() => {});
+    const doSave = async (includeScrollback: boolean) => {
+      try {
+        const wsData = await Promise.all(
+          workspaces.map(async (ws) => ({
+            name: ws.name,
+            color: ws.color,
+            paneTree: await serializePaneTree(ws.paneTree, includeScrollback),
+          }))
+        );
+        const sessionData: SessionData = {
+          workspaces: wsData,
+          activeWorkspace: workspaces.findIndex((w) => w.id === activeWorkspaceId),
+          sidebarWidth,
+          sidebarVisible,
+          windowState: { x: 0, y: 0, width: 1280, height: 800, maximized: false },
+        };
+        await saveSession(sessionData);
+      } catch (e) {
+        console.warn("session save failed:", e);
+      }
     };
-    window.addEventListener("beforeunload", handler);
-    return () => window.removeEventListener("beforeunload", handler);
+
+    const timer = setInterval(() => { doSave(false); }, AUTO_SAVE_INTERVAL);
+
+    const heavySave = () => { doSave(true); };
+    const visHandler = () => { if (document.hidden) heavySave(); };
+    window.addEventListener("beforeunload", heavySave);
+    document.addEventListener("visibilitychange", visHandler);
+
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("beforeunload", heavySave);
+      document.removeEventListener("visibilitychange", visHandler);
+    };
   }, [workspaces, activeWorkspaceId, sidebarWidth, sidebarVisible]);
 
   // Listen for terminal exit events
@@ -412,33 +420,63 @@ function setPaneTerminalId(node: PaneNode, paneId: string, terminalId: string): 
 
 // ── Session Serialization ────────────────────────────────────────
 
-function serializePaneTree(node: PaneNode): import("./types").PaneNodeData {
+async function serializePaneTree(
+  node: PaneNode,
+  includeScrollback: boolean
+): Promise<PaneNodeData> {
   if (node.type === "terminal") {
-    return { type: "terminal", cwd: "", shell: "" };
+    const tid = node.terminalId;
+    if (!tid) return { type: "terminal", cwd: "", shell: "" };
+
+    const [cwd, shell, scrollback] = await Promise.all([
+      getCwd(tid).catch(() => ""),
+      getTerminalShell(tid).catch(() => ""),
+      includeScrollback
+        ? getScrollback(tid).then(uint8ToBase64).catch(() => "")
+        : Promise.resolve(""),
+    ]);
+    return { type: "terminal", cwd, shell, scrollback };
   }
   if (node.type === "browser") {
     return { type: "terminal", cwd: "", shell: "" };
   }
+  const [first, second] = await Promise.all([
+    serializePaneTree(node.first, includeScrollback),
+    serializePaneTree(node.second, includeScrollback),
+  ]);
   return {
     type: "split",
     direction: node.direction,
     ratio: node.ratio,
-    first: serializePaneTree(node.first),
-    second: serializePaneTree(node.second),
+    first,
+    second,
   };
 }
 
-function restorePaneTree(data: import("./types").PaneNodeData): PaneNode {
+function restorePaneTree(data: PaneNodeData, savedAt: number): PaneNode {
   const id = `pane-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   if (data.type === "terminal") {
-    return { type: "terminal", id, terminalId: "" };
+    const hasState = (data.cwd && data.cwd.length > 0) || (data.scrollback && data.scrollback.length > 0);
+    return {
+      type: "terminal",
+      id,
+      terminalId: "",
+      restore: hasState
+        ? {
+            cwd: data.cwd,
+            shell: data.shell,
+            scrollbackBase64: data.scrollback ?? "",
+            savedAt,
+          }
+        : undefined,
+    };
   }
   return {
     type: "split",
     id,
     direction: data.direction as "horizontal" | "vertical",
     ratio: data.ratio,
-    first: restorePaneTree(data.first),
-    second: restorePaneTree(data.second),
+    first: restorePaneTree(data.first, savedAt),
+    second: restorePaneTree(data.second, savedAt),
   };
 }

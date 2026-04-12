@@ -29,7 +29,10 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            log::info!("Second instance launched; surfacing existing window");
             if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
                 let _ = window.set_focus();
             }
         }))
@@ -42,6 +45,8 @@ pub fn run() {
             commands::resize_terminal,
             commands::close_terminal,
             commands::get_shell_path,
+            commands::get_scrollback,
+            commands::get_terminal_shell,
             commands::list_notifications,
             commands::clear_notifications,
             commands::dismiss_notification,
@@ -57,6 +62,7 @@ pub fn run() {
             commands::window_is_maximized,
             commands::clipboard_paste,
             commands::clipboard_write_text,
+            commands::quit_app,
         ])
         .setup(move |app| {
             let app_handle = app.handle().clone();
@@ -71,9 +77,9 @@ pub fn run() {
 
             // Set up system tray
             let tray_menu = tauri::menu::MenuBuilder::new(app)
-                .text("show", "Show WinMux")
+                .text("show", "Open WinMux")
                 .separator()
-                .text("quit", "Quit")
+                .text("quit", "Quit WinMux (ends all terminals)")
                 .build()?;
 
             let _tray = tauri::tray::TrayIconBuilder::new()
@@ -82,11 +88,13 @@ pub fn run() {
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "show" => {
                         if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.unminimize();
                             let _ = window.show();
                             let _ = window.set_focus();
                         }
                     }
                     "quit" => {
+                        log::info!("Quit requested from tray menu");
                         app.exit(0);
                     }
                     _ => {}
@@ -94,6 +102,7 @@ pub fn run() {
                 .on_tray_icon_event(|tray, event| {
                     if let tauri::tray::TrayIconEvent::DoubleClick { .. } = event {
                         if let Some(window) = tray.app_handle().get_webview_window("main") {
+                            let _ = window.unminimize();
                             let _ = window.show();
                             let _ = window.set_focus();
                         }
@@ -106,6 +115,7 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                log::info!("Close requested on window '{}' — hiding to tray", window.label());
                 let _ = window.hide();
                 api.prevent_close();
             }

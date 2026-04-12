@@ -1,8 +1,13 @@
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
+use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+
+pub const SCROLLBACK_MAX_BYTES: usize = 256 * 1024;
+
+pub type ScrollbackBuf = Arc<Mutex<VecDeque<u8>>>;
 
 pub struct PtySession {
     master: Box<dyn MasterPty + Send>,
@@ -13,6 +18,7 @@ pub struct PtySession {
     pub cwd: PathBuf,
     pub shell: String,
     pub title: String,
+    pub scrollback: ScrollbackBuf,
 }
 
 impl PtySession {
@@ -83,6 +89,7 @@ impl PtySession {
             cwd: working_dir,
             shell: shell.to_string(),
             title: String::new(),
+            scrollback: Arc::new(Mutex::new(VecDeque::with_capacity(SCROLLBACK_MAX_BYTES))),
         };
 
         Ok((session, reader))

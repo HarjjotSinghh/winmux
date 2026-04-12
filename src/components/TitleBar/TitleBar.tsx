@@ -1,9 +1,19 @@
-import { useState, useEffect } from "react";
-import { windowMinimize, windowMaximize, windowClose, windowIsMaximized } from "../../lib/ipc";
+import { useState, useEffect, useCallback } from "react";
+import { windowMinimize, windowMaximize, windowClose, windowIsMaximized, quitApp } from "../../lib/ipc";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import CloseConfirmModal from "./CloseConfirmModal";
+
+type CloseAction = "ask" | "hide" | "quit";
+const CLOSE_ACTION_KEY = "winmux.closeAction";
+
+function readCloseAction(): CloseAction {
+  const v = localStorage.getItem(CLOSE_ACTION_KEY);
+  return v === "hide" || v === "quit" ? v : "ask";
+}
 
 export default function TitleBar() {
   const [maximized, setMaximized] = useState(false);
+  const [showCloseModal, setShowCloseModal] = useState(false);
 
   useEffect(() => {
     windowIsMaximized().then(setMaximized).catch(() => {});
@@ -11,6 +21,29 @@ export default function TitleBar() {
       windowIsMaximized().then(setMaximized).catch(() => {});
     });
     return () => { unlisten.then((fn) => fn()); };
+  }, []);
+
+  const handleCloseClick = useCallback(() => {
+    const action = readCloseAction();
+    if (action === "hide") {
+      windowClose();
+    } else if (action === "quit") {
+      quitApp();
+    } else {
+      setShowCloseModal(true);
+    }
+  }, []);
+
+  const handleKeepRunning = useCallback((remember: boolean) => {
+    if (remember) localStorage.setItem(CLOSE_ACTION_KEY, "hide");
+    setShowCloseModal(false);
+    windowClose();
+  }, []);
+
+  const handleQuit = useCallback((remember: boolean) => {
+    if (remember) localStorage.setItem(CLOSE_ACTION_KEY, "quit");
+    setShowCloseModal(false);
+    quitApp();
   }, []);
 
   return (
@@ -57,12 +90,20 @@ export default function TitleBar() {
             </svg>
           )}
         </WinBtn>
-        <WinBtn onClick={windowClose} label="Close" danger>
+        <WinBtn onClick={handleCloseClick} label="Close" danger>
           <svg width="10" height="10" viewBox="0 0 10 10">
             <path d="M1 1l8 8M9 1l-8 8" stroke="currentColor" strokeWidth="1.2" />
           </svg>
         </WinBtn>
       </div>
+
+      {showCloseModal && (
+        <CloseConfirmModal
+          onKeepRunning={handleKeepRunning}
+          onQuit={handleQuit}
+          onCancel={() => setShowCloseModal(false)}
+        />
+      )}
     </div>
   );
 }

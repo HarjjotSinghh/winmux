@@ -1,4 +1,4 @@
-use super::session::PtySession;
+use super::session::{PtySession, ScrollbackBuf, SCROLLBACK_MAX_BYTES};
 use crate::notification::OscParser;
 use std::collections::HashMap;
 use std::io::Read;
@@ -51,12 +51,13 @@ impl PtyManager {
         ];
 
         let (session, reader) = PtySession::spawn(shell, cwd, cols, rows, env_vars)?;
+        let scrollback = session.scrollback.clone();
         self.sessions.insert(id.clone(), session);
 
         // Spawn reader thread for this terminal
         let terminal_id = id.clone();
         std::thread::spawn(move || {
-            Self::read_loop(reader, channel, terminal_id, app_handle);
+            Self::read_loop(reader, channel, terminal_id, app_handle, scrollback);
         });
 
         Ok(id)
@@ -67,6 +68,7 @@ impl PtyManager {
         channel: Channel<Vec<u8>>,
         terminal_id: String,
         app_handle: AppHandle,
+        scrollback: ScrollbackBuf,
     ) {
         let mut buf = vec![0u8; 8192];
         let mut osc_parser = OscParser::new();
@@ -93,6 +95,15 @@ impl PtyManager {
                                 osc_type: notif.osc_type,
                             },
                         );
+                    }
+
+                    // Append to scrollback ring buffer (trim front if over cap)
+                    if let Ok(mut sb) = scrollback.lock() {
+                        sb.extend(data.iter());
+                        let overflow = sb.len().saturating_sub(SCROLLBACK_MAX_BYTES);
+                        if overflow > 0 {
+                            sb.drain(0..overflow);
+                        }
                     }
 
                     // Send raw data to frontend
@@ -148,6 +159,23 @@ impl PtyManager {
             .get(id)
             .ok_or_else(|| format!("Terminal not found: {}", id))?;
         Ok(session.cwd.to_string_lossy().to_string())
+    }
+
+    pub fn get_scrollback(&self, id: &str) -> Result<Vec<u8>, String> {
+        let session = self
+            .sessions
+            .get(id)
+            .ok_or_else(|| format!("Terminal not found: {}", id))?;
+        let sb = session.scrollback.lock().map_err(|e| e.to_string())?;
+        Ok(sb.iter().copied().collect())
+    }
+
+    pub fn get_shell(&self, id: &str) -> Result<String, String> {
+        let session = self
+            .sessions
+            .get(id)
+            .ok_or_else(|| format!("Terminal not found: {}", id))?;
+        Ok(session.shell.clone())
     }
 
     pub fn session_count(&self) -> usize {

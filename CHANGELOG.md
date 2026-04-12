@@ -3,6 +3,24 @@
 All notable changes to WinMux are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-04-12
+
+### Added
+- **Session continuity** — closing WinMux no longer means losing your terminals. Two complementary mechanisms:
+  - **Hide-to-tray (Tier 1)**: clicking ❌ now shows a modal asking whether to keep WinMux running in the tray (recommended) or quit completely. Your choice is remembered. Terminals and any running processes (Claude, dev servers, etc.) stay alive between hides — reopening via the tray returns you to the exact state you left.
+  - **Visual restoration (Tier 2b)**: on actual app quit + relaunch, WinMux now saves each pane's working directory, shell, and last ~256 KB of scrollback (on window hide and before unload). On restart, shells respawn in the same cwd and the previous output is replayed with dim `── Previous session · <time> ──` and `── Resumed ──` delimiters so it's clearly historical.
+- Tray menu labels clarified: `Open WinMux` / `Quit WinMux (ends all terminals)`. Tray tooltip now reads `WinMux — double-click to open`.
+
+### Fixed
+- **Re-launching the app shortcut while WinMux was hidden did nothing.** The single-instance callback only called `set_focus()` on the hidden window. It now calls `show()` + `unminimize()` + `set_focus()`, so re-launching surfaces the existing window as expected. Tray "Open" and double-click paths also hardened.
+- Added log instrumentation on close-to-tray, second-instance launch, and explicit quit for easier debugging.
+
+### Infrastructure
+- PTY sessions now maintain a 256 KB ring buffer of raw output, accessible via `get_scrollback` IPC. Buffer is trimmed from the front as it fills.
+- New `quit_app` Tauri command for deliberate app exit from the UI.
+- New `get_terminal_shell` command exposes the shell path per session for accurate restoration.
+- Session JSON schema extended with `scrollback` (base64) field on terminal panes. Old sessions load forward-compatibly (field is optional).
+
 ## [0.2.1] - 2026-04-12
 
 ### Fixed

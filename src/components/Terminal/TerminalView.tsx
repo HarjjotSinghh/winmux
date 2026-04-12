@@ -14,9 +14,26 @@ import {
   clipboardWriteText,
 } from "../../lib/ipc";
 import { getXtermTheme } from "../../lib/theme";
+import type { TerminalRestoreData } from "../../types";
 
 function quotePath(p: string): string {
   return /[\s"']/.test(p) ? `"${p.replace(/"/g, '\\"')}"` : p;
+}
+
+function base64ToUint8(s: string): Uint8Array {
+  const binary = atob(s);
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function formatTime(ms: number): string {
+  const d = new Date(ms);
+  const h = d.getHours().toString().padStart(2, "0");
+  const m = d.getMinutes().toString().padStart(2, "0");
+  const day = d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return `${day} · ${h}:${m}`;
 }
 
 async function smartPasteInto(term: Terminal) {
@@ -38,6 +55,7 @@ interface TerminalViewProps {
   cwd?: string;
   focused?: boolean;
   onFocus?: () => void;
+  restore?: TerminalRestoreData;
 }
 
 export default function TerminalView({
@@ -46,6 +64,7 @@ export default function TerminalView({
   cwd,
   focused,
   onFocus,
+  restore,
 }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -61,6 +80,8 @@ export default function TerminalView({
   shellRef.current = shell;
   const cwdRef = useRef(cwd);
   cwdRef.current = cwd;
+  const restoreRef = useRef(restore);
+  restoreRef.current = restore;
 
   // Initialize terminal ONCE on mount
   useEffect(() => {
@@ -139,9 +160,19 @@ export default function TerminalView({
         // Container might not be ready yet
       }
 
+      const hasRestore = !!restoreRef.current;
+      const pendingOutput: Uint8Array[] = [];
+      let replayed = !hasRestore;
+
       // Spawn PTY after fit so we send correct cols/rows
       createTerminal(
-        (data) => term.write(data),
+        (data) => {
+          if (replayed) {
+            term.write(data);
+          } else {
+            pendingOutput.push(data);
+          }
+        },
         {
           shell: shellRef.current,
           cwd: cwdRef.current,
@@ -151,6 +182,25 @@ export default function TerminalView({
       )
         .then((id) => {
           terminalIdRef.current = id;
+
+          if (hasRestore && restoreRef.current) {
+            const r = restoreRef.current;
+            const header = `\r\n\x1b[2;90m── Previous session · ${formatTime(r.savedAt)} ──\x1b[0m\r\n`;
+            const footer = `\r\n\x1b[2;90m── Resumed ──\x1b[0m\r\n\r\n`;
+            term.write(header);
+            if (r.scrollbackBase64) {
+              try {
+                term.write(base64ToUint8(r.scrollbackBase64));
+              } catch (e) {
+                console.warn("scrollback decode failed:", e);
+              }
+            }
+            term.write(footer);
+            replayed = true;
+            for (const p of pendingOutput) term.write(p);
+            pendingOutput.length = 0;
+          }
+
           onReadyRef.current(id);
 
           term.onData((data) => {
