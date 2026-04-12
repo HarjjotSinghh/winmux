@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 interface CloseConfirmModalProps {
   onKeepRunning: (remember: boolean) => void;
@@ -13,9 +13,30 @@ export default function CloseConfirmModal({
 }: CloseConfirmModalProps) {
   const [remember, setRemember] = useState(true);
 
+  // Escape dismisses the modal. Prevents the "stuck overlay with no way
+  // out" failure mode when the buttons are unresponsive.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onCancel();
+      }
+    };
+    window.addEventListener("keydown", handler, { capture: true });
+    return () => window.removeEventListener("keydown", handler, { capture: true } as EventListenerOptions);
+  }, [onCancel]);
+
   return (
     <div
       onClick={onCancel}
+      // `onMouseDown` + `onMouseUp` must stop propagation too — the modal
+      // is rendered inside `TitleBar`, whose root `onMouseDown` calls
+      // `window.startDragging()`. Without this, every mousedown on the
+      // modal starts a native window drag and the subsequent click never
+      // registers as a button click, making the modal appear totally
+      // unresponsive.
+      onMouseDown={(e) => e.stopPropagation()}
+      onMouseUp={(e) => e.stopPropagation()}
       style={{
         position: "fixed",
         inset: 0,
@@ -28,6 +49,8 @@ export default function CloseConfirmModal({
     >
       <div
         onClick={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        onMouseUp={(e) => e.stopPropagation()}
         style={{
           width: 400,
           background: "#141414",

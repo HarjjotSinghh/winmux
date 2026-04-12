@@ -123,6 +123,7 @@ pub fn run() {
                 .text("show", "Open WinMux")
                 .separator()
                 .text("quit", "Quit WinMux (ends all terminals)")
+                .text("force_quit", "Force Quit (kill immediately)")
                 .build()?;
 
             let _tray = tauri::tray::TrayIconBuilder::new()
@@ -140,11 +141,22 @@ pub fn run() {
                         log::info!("Quit requested from tray menu");
                         let state: tauri::State<DaemonHandle> = app.state();
                         if let Some(d) = state.get() {
-                            if let Err(e) = d.shutdown() {
-                                log::warn!("daemon shutdown failed from tray: {}", e);
-                            }
+                            // Non-blocking — do NOT wait on daemon shutdown,
+                            // or a hung daemon delays tray response.
+                            std::thread::spawn(move || {
+                                if let Err(e) = d.shutdown() {
+                                    log::warn!("daemon shutdown failed from tray: {}", e);
+                                }
+                            });
                         }
+                        std::thread::sleep(std::time::Duration::from_millis(250));
                         app.exit(0);
+                    }
+                    "force_quit" => {
+                        // Absolute escape hatch for when the UI is frozen.
+                        // Skips every cleanup path and kills the process now.
+                        log::warn!("Force quit — process terminating immediately");
+                        std::process::exit(0);
                     }
                     _ => {}
                 })

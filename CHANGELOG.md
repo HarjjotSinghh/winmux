@@ -3,6 +3,16 @@
 All notable changes to WinMux are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.10] - 2026-04-13
+
+### Fixed — root cause of the "buttons don't work" modal
+- **CloseConfirmModal buttons were genuinely broken since v0.3.0.** The modal is rendered inside `TitleBar`, whose root `<div onMouseDown={startDragging}>` enables native window-drag. The modal did not stop `mousedown` propagation, so every click on the modal started a Tauri window drag and the subsequent click never registered as a button click. Added `onMouseDown` + `onMouseUp` stopPropagation on both the overlay and modal content. Quit completely / Keep running / click-outside-to-dismiss / Escape-to-dismiss all work reliably now. **This was not a freeze — it was drag interception.**
+
+### Added — escape hatches
+- **Tray menu "Force Quit (kill immediately)"**. Tray events are handled by Rust, not JS, so this remains clickable even when the webview is frozen. Calls `std::process::exit(0)` directly — no modal, no daemon shutdown RPC, no waiting. The one-click recovery when the UI is stuck.
+- **Escape dismisses the close modal** (registered with `capture: true` so it fires before any input handlers inside the modal).
+- Regular tray "Quit" now also uses the fire-and-forget daemon-shutdown pattern (matches `quit_app`), so tray quit can never hang on a stuck daemon either.
+
 ## [0.4.9] - 2026-04-13
 
 ### Added (diagnostic)
