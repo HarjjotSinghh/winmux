@@ -21,6 +21,39 @@ export async function createTerminal(
   });
 }
 
+export interface AttachInfo {
+  scrollbackBase64: string;
+  shell: string;
+  cwd: string;
+}
+
+/**
+ * Re-attach to an existing daemon-owned PTY by ID. Registers the output channel
+ * for subsequent push notifications and returns the current scrollback so the
+ * caller can replay it into xterm before live output resumes. Rejects with
+ * "daemon_unavailable" if the daemon isn't running, or a "not_found" variant if
+ * the session has since died.
+ */
+export async function attachTerminal(
+  sessionId: string,
+  onOutput: (data: Uint8Array) => void
+): Promise<AttachInfo> {
+  const channel = new Channel<number[]>();
+  channel.onmessage = (data) => {
+    onOutput(new Uint8Array(data));
+  };
+
+  const raw = await invoke<{ scrollback_b64: string; shell: string; cwd: string }>(
+    "attach_terminal",
+    { sessionId, onOutput: channel }
+  );
+  return {
+    scrollbackBase64: raw.scrollback_b64,
+    shell: raw.shell,
+    cwd: raw.cwd,
+  };
+}
+
 export async function writeTerminal(id: string, data: string): Promise<void> {
   const encoder = new TextEncoder();
   return invoke("write_terminal", {

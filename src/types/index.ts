@@ -5,6 +5,8 @@ export interface TerminalRestoreData {
   shell: string;
   scrollbackBase64: string;
   savedAt: number;
+  /** Daemon session ID to re-attach; when set, UI tries attach_terminal first. */
+  sessionId?: string;
 }
 
 export type PaneNode =
@@ -102,7 +104,14 @@ export interface WorkspaceData {
 }
 
 export type PaneNodeData =
-  | { type: "terminal"; cwd: string; shell: string; scrollback?: string }
+  | {
+      type: "terminal";
+      cwd: string;
+      shell: string;
+      scrollback?: string;
+      /** Daemon session ID to re-attach on restore (present only when daemon owned the PTY). */
+      sessionId?: string;
+    }
   | {
       type: "split";
       direction: string;

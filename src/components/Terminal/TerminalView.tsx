@@ -12,6 +12,7 @@ import {
   resizeTerminal,
   clipboardPaste,
   clipboardWriteText,
+  attachTerminal,
 } from "../../lib/ipc";
 import { getXtermTheme } from "../../lib/theme";
 import type { TerminalRestoreData } from "../../types";
@@ -160,37 +161,67 @@ export default function TerminalView({
         // Container might not be ready yet
       }
 
-      const hasRestore = !!restoreRef.current;
-      const pendingOutput: Uint8Array[] = [];
-      let replayed = !hasRestore;
+      const wireSession = (id: string) => {
+        terminalIdRef.current = id;
+        onReadyRef.current(id);
+        term.onData((data) => {
+          writeTerminal(id, data).catch(console.error);
+        });
+        term.onResize(({ cols, rows }) => {
+          resizeTerminal(id, cols, rows).catch(console.error);
+        });
+        term.focus();
+      };
 
-      // Spawn PTY after fit so we send correct cols/rows
-      createTerminal(
-        (data) => {
-          if (replayed) {
-            term.write(data);
-          } else {
-            pendingOutput.push(data);
+      const tryAttachThenFallback = async () => {
+        const restore = restoreRef.current;
+
+        // Path A: try to re-attach to a live daemon session
+        if (restore?.sessionId) {
+          try {
+            const info = await attachTerminal(restore.sessionId, (data) => term.write(data));
+            // Daemon kept the PTY alive — replay its authoritative scrollback.
+            if (info.scrollbackBase64) {
+              try {
+                term.write(base64ToUint8(info.scrollbackBase64));
+              } catch (e) {
+                console.warn("attach scrollback decode failed:", e);
+              }
+            }
+            term.write("\r\n\x1b[2;90m── Reattached ──\x1b[0m\r\n");
+            wireSession(restore.sessionId);
+            return;
+          } catch (e) {
+            console.info("attach failed, falling back to fresh shell:", e);
           }
-        },
-        {
-          shell: shellRef.current,
-          cwd: cwdRef.current,
-          cols: term.cols,
-          rows: term.rows,
         }
-      )
-        .then((id) => {
-          terminalIdRef.current = id;
 
-          if (hasRestore && restoreRef.current) {
-            const r = restoreRef.current;
-            const header = `\r\n\x1b[2;90m── Previous session · ${formatTime(r.savedAt)} ──\x1b[0m\r\n`;
+        // Path B: fresh shell, with optional Tier 2b visual replay.
+        const hasVisualRestore = !!restore && (restore.scrollbackBase64.length > 0 || restore.cwd.length > 0);
+        const pendingOutput: Uint8Array[] = [];
+        let replayed = !hasVisualRestore;
+
+        try {
+          const id = await createTerminal(
+            (data) => {
+              if (replayed) term.write(data);
+              else pendingOutput.push(data);
+            },
+            {
+              shell: shellRef.current,
+              cwd: cwdRef.current,
+              cols: term.cols,
+              rows: term.rows,
+            }
+          );
+
+          if (hasVisualRestore && restore) {
+            const header = `\r\n\x1b[2;90m── Previous session · ${formatTime(restore.savedAt)} ──\x1b[0m\r\n`;
             const footer = `\r\n\x1b[2;90m── Resumed ──\x1b[0m\r\n\r\n`;
             term.write(header);
-            if (r.scrollbackBase64) {
+            if (restore.scrollbackBase64) {
               try {
-                term.write(base64ToUint8(r.scrollbackBase64));
+                term.write(base64ToUint8(restore.scrollbackBase64));
               } catch (e) {
                 console.warn("scrollback decode failed:", e);
               }
@@ -201,22 +232,14 @@ export default function TerminalView({
             pendingOutput.length = 0;
           }
 
-          onReadyRef.current(id);
-
-          term.onData((data) => {
-            writeTerminal(id, data).catch(console.error);
-          });
-
-          term.onResize(({ cols, rows }) => {
-            resizeTerminal(id, cols, rows).catch(console.error);
-          });
-
-          term.focus();
-        })
-        .catch((e) => {
+          wireSession(id);
+        } catch (e) {
           term.writeln(`\x1b[31mFailed to start terminal: ${e}\x1b[0m`);
           term.writeln("Check that powershell.exe or cmd.exe is available.");
-        });
+        }
+      };
+
+      tryAttachThenFallback();
     });
 
     // Focus handler

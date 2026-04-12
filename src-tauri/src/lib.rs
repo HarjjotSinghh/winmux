@@ -1,6 +1,7 @@
 mod commands;
 mod config;
 pub mod daemon;
+mod daemon_client;
 mod ipc;
 mod notification;
 mod pty;
@@ -11,10 +12,21 @@ use tauri::Manager;
 
 pub use pty::{OscNotif, PtyManager, SessionCallbacks};
 
+/// Tauri-managed handle to the daemon client. `None` when the daemon
+/// couldn't be spawned (binary missing, pipe errors, etc.) — in that case
+/// commands fall back to in-process PTYs via `PtyManager`.
+pub struct DaemonHandle(pub Option<std::sync::Arc<daemon_client::DaemonClient>>);
+
 pub fn run() {
     let pty_manager = Arc::new(Mutex::new(PtyManager::new()));
     let notification_store = Arc::new(Mutex::new(notification::NotificationStore::new()));
     let config = Arc::new(Mutex::new(config::Settings::load()));
+
+    // Attempt to bring up the winmux-daemon so PTYs can survive UI restarts.
+    // If the daemon binary isn't available or the pipe can't be opened,
+    // commands gracefully fall back to in-process PtyManager.
+    let daemon = daemon_client::DaemonClient::connect_or_spawn().map(Arc::new);
+    let daemon_handle = DaemonHandle(daemon);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
@@ -40,8 +52,10 @@ pub fn run() {
         .manage(pty_manager.clone())
         .manage(notification_store.clone())
         .manage(config.clone())
+        .manage(daemon_handle)
         .invoke_handler(tauri::generate_handler![
             commands::create_terminal,
+            commands::attach_terminal,
             commands::write_terminal,
             commands::resize_terminal,
             commands::close_terminal,

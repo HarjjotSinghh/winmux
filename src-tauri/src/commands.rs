@@ -1,7 +1,10 @@
 use crate::config::Settings;
+use crate::daemon_client::SessionSinks;
 use crate::notification::{self, Notification, NotificationStore};
 use crate::pty::{OscNotif, PtyManager, SessionCallbacks};
 use crate::session::SessionData;
+use crate::DaemonHandle;
+use base64::Engine;
 use std::sync::{Arc, Mutex};
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Emitter, State, WebviewWindow};
@@ -20,6 +23,43 @@ struct TerminalExitEvent {
     exit_code: Option<u32>,
 }
 
+fn build_daemon_sinks(
+    app: AppHandle,
+    output: Channel<Vec<u8>>,
+    terminal_id: String,
+) -> SessionSinks {
+    let app_for_osc = app.clone();
+    let tid_for_osc = terminal_id.clone();
+    let tid_for_exit = terminal_id;
+
+    SessionSinks {
+        on_output: Box::new(move |data| {
+            let _ = output.send(data);
+        }),
+        on_osc: Box::new(move |n: &OscNotif| {
+            // Toast is already sent by the daemon process; just emit to UI.
+            let _ = app_for_osc.emit(
+                "osc-notification",
+                OscNotificationEvent {
+                    terminal_id: tid_for_osc.clone(),
+                    title: n.title.clone(),
+                    body: n.body.clone(),
+                    osc_type: n.osc_type.clone(),
+                },
+            );
+        }),
+        on_exit: Box::new(move |code: Option<u32>| {
+            let _ = app.emit(
+                "terminal-exit",
+                TerminalExitEvent {
+                    terminal_id: tid_for_exit.clone(),
+                    exit_code: code,
+                },
+            );
+        }),
+    }
+}
+
 type PtyState = Arc<Mutex<PtyManager>>;
 type NotifState = Arc<Mutex<NotificationStore>>;
 type ConfigState = Arc<Mutex<Settings>>;
@@ -31,6 +71,7 @@ type ConfigState = Arc<Mutex<Settings>>;
 pub fn create_terminal(
     app: AppHandle,
     pty_manager: State<PtyState>,
+    daemon: State<DaemonHandle>,
     config: State<ConfigState>,
     shell: Option<String>,
     cwd: Option<String>,
@@ -49,12 +90,68 @@ pub fn create_terminal(
     let c = cols.unwrap_or(80);
     let r = rows.unwrap_or(24);
 
+    // Prefer daemon if available (PTY survives UI restarts)
+    if let Some(d) = daemon.0.as_ref() {
+        // We won't know the ID until the daemon responds, so build sinks with a
+        // placeholder; once we know the real ID we re-register sinks keyed by it.
+        // Simplest: register AFTER we know the ID by building sinks inline with the
+        // id we get back. DaemonClient::create_session does this via re-insert.
+        // Build sinks where the terminal_id is filled in by the daemon.
+        // We use a placeholder here — the daemon uses its own assigned UUID.
+        let placeholder_sinks =
+            build_daemon_sinks(app.clone(), on_output.clone(), String::new());
+        let id = d.create_session(
+            Some(&shell_path),
+            working_dir.as_deref(),
+            c,
+            r,
+            placeholder_sinks,
+        )?;
+
+        // Re-register sinks with the real id so emitted osc/exit events carry it.
+        let real_sinks = build_daemon_sinks(app, on_output, id.clone());
+        // attach_session re-registers; it's safe to call again (daemon idempotent).
+        d.attach_session(&id, real_sinks)?;
+        return Ok(id);
+    }
+
+    // Fallback: in-process PTY
     let id = uuid::Uuid::new_v4().to_string();
     let callbacks = build_tauri_callbacks(app, on_output, id.clone());
 
     let mut mgr = pty_manager.lock().map_err(|e| e.to_string())?;
     mgr.create(id.clone(), &shell_path, working_dir.as_deref(), c, r, callbacks)?;
     Ok(id)
+}
+
+/// Re-attach to a pre-existing daemon session (used on UI restore). Returns
+/// the scrollback bytes so the UI can replay them before live output resumes.
+/// Errors if daemon isn't running or the session no longer exists.
+#[tauri::command]
+pub fn attach_terminal(
+    app: AppHandle,
+    daemon: State<DaemonHandle>,
+    session_id: String,
+    on_output: Channel<Vec<u8>>,
+) -> Result<AttachInfo, String> {
+    let d = daemon
+        .0
+        .as_ref()
+        .ok_or_else(|| "daemon_unavailable".to_string())?;
+    let sinks = build_daemon_sinks(app, on_output, session_id.clone());
+    let info = d.attach_session(&session_id, sinks)?;
+    Ok(AttachInfo {
+        scrollback_b64: base64::engine::general_purpose::STANDARD.encode(&info.scrollback),
+        shell: info.shell,
+        cwd: info.cwd,
+    })
+}
+
+#[derive(serde::Serialize)]
+pub struct AttachInfo {
+    pub scrollback_b64: String,
+    pub shell: String,
+    pub cwd: String,
 }
 
 fn build_tauri_callbacks(
@@ -97,9 +194,13 @@ fn build_tauri_callbacks(
 #[tauri::command]
 pub fn write_terminal(
     pty_manager: State<PtyState>,
+    daemon: State<DaemonHandle>,
     id: String,
     data: Vec<u8>,
 ) -> Result<(), String> {
+    if let Some(d) = daemon.0.as_ref() {
+        return d.write_session(&id, &data);
+    }
     let mgr = pty_manager.lock().map_err(|e| e.to_string())?;
     mgr.write(&id, &data)
 }
@@ -107,34 +208,72 @@ pub fn write_terminal(
 #[tauri::command]
 pub fn resize_terminal(
     pty_manager: State<PtyState>,
+    daemon: State<DaemonHandle>,
     id: String,
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
+    if let Some(d) = daemon.0.as_ref() {
+        return d.resize_session(&id, cols, rows);
+    }
     let mut mgr = pty_manager.lock().map_err(|e| e.to_string())?;
     mgr.resize(&id, cols, rows)
 }
 
 #[tauri::command]
-pub fn close_terminal(pty_manager: State<PtyState>, id: String) -> Result<(), String> {
+pub fn close_terminal(
+    pty_manager: State<PtyState>,
+    daemon: State<DaemonHandle>,
+    id: String,
+) -> Result<(), String> {
+    if let Some(d) = daemon.0.as_ref() {
+        return d.close_session(&id);
+    }
     let mut mgr = pty_manager.lock().map_err(|e| e.to_string())?;
     mgr.close(&id)
 }
 
 #[tauri::command]
-pub fn get_cwd(pty_manager: State<PtyState>, id: String) -> Result<String, String> {
+pub fn get_cwd(
+    pty_manager: State<PtyState>,
+    daemon: State<DaemonHandle>,
+    id: String,
+) -> Result<String, String> {
+    if let Some(d) = daemon.0.as_ref() {
+        return d.get_cwd(&id);
+    }
     let mgr = pty_manager.lock().map_err(|e| e.to_string())?;
     mgr.get_cwd(&id)
 }
 
 #[tauri::command]
-pub fn get_scrollback(pty_manager: State<PtyState>, id: String) -> Result<Vec<u8>, String> {
+pub fn get_scrollback(
+    pty_manager: State<PtyState>,
+    daemon: State<DaemonHandle>,
+    id: String,
+) -> Result<Vec<u8>, String> {
+    if let Some(d) = daemon.0.as_ref() {
+        return d.get_scrollback(&id);
+    }
     let mgr = pty_manager.lock().map_err(|e| e.to_string())?;
     mgr.get_scrollback(&id)
 }
 
 #[tauri::command]
-pub fn get_terminal_shell(pty_manager: State<PtyState>, id: String) -> Result<String, String> {
+pub fn get_terminal_shell(
+    pty_manager: State<PtyState>,
+    daemon: State<DaemonHandle>,
+    id: String,
+) -> Result<String, String> {
+    if let Some(d) = daemon.0.as_ref() {
+        // Daemon doesn't expose shell via a dedicated method — use list_sessions.
+        if let Ok(sessions) = d.list_sessions() {
+            if let Some(s) = sessions.into_iter().find(|s| s.id == id) {
+                return Ok(s.shell);
+            }
+        }
+        return Err(format!("session not found: {}", id));
+    }
     let mgr = pty_manager.lock().map_err(|e| e.to_string())?;
     mgr.get_shell(&id)
 }

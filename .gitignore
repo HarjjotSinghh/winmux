@@ -33,5 +33,8 @@ src-tauri/WixTools/
 !*.key.pub
 .tauri/
 
+# Tauri sidecar staging dir (generated from target/release by prepare-daemon-sidecar.mjs)
+src-tauri/binaries/
+
 # Local Claude config
 .claude/

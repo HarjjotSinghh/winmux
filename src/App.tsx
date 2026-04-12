@@ -435,7 +435,10 @@ async function serializePaneTree(
         ? getScrollback(tid).then(uint8ToBase64).catch(() => "")
         : Promise.resolve(""),
     ]);
-    return { type: "terminal", cwd, shell, scrollback };
+    // Persist the terminal ID as the daemon session ID. On restore the UI will
+    // try to re-attach; if the daemon's still holding that session, the PTY
+    // (and anything running in it) survives the UI restart.
+    return { type: "terminal", cwd, shell, scrollback, sessionId: tid };
   }
   if (node.type === "browser") {
     return { type: "terminal", cwd: "", shell: "" };
@@ -456,7 +459,10 @@ async function serializePaneTree(
 function restorePaneTree(data: PaneNodeData, savedAt: number): PaneNode {
   const id = `pane-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   if (data.type === "terminal") {
-    const hasState = (data.cwd && data.cwd.length > 0) || (data.scrollback && data.scrollback.length > 0);
+    const hasState =
+      (data.cwd && data.cwd.length > 0) ||
+      (data.scrollback && data.scrollback.length > 0) ||
+      !!data.sessionId;
     return {
       type: "terminal",
       id,
@@ -467,6 +473,7 @@ function restorePaneTree(data: PaneNodeData, savedAt: number): PaneNode {
             shell: data.shell,
             scrollbackBase64: data.scrollback ?? "",
             savedAt,
+            sessionId: data.sessionId,
           }
         : undefined,
     };

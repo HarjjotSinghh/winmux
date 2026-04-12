@@ -38,6 +38,10 @@ pub enum PaneData {
         shell: String,
         #[serde(default)]
         scrollback: String,
+        /// Daemon session ID from the previous run. When present the UI will
+        /// try to re-attach to the live PTY instead of spawning a fresh shell.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
     },
     Split {
         direction: String,
@@ -89,6 +93,7 @@ impl Default for SessionData {
                         .to_string(),
                     shell: "pwsh.exe".to_string(),
                     scrollback: String::new(),
+                    session_id: None,
                 },
             }],
             active_workspace: 0,

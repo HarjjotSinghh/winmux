@@ -3,6 +3,26 @@
 All notable changes to WinMux are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-04-13
+
+### Added
+- **True terminal persistence via a separate daemon process.** A new `winmux-daemon.exe` binary ships alongside the UI. On first UI launch the app tries to connect to the daemon on `\\.\pipe\winmux-daemon`; if it's not running, the UI spawns it detached. The daemon owns all PTYs — **closing or force-quitting the UI no longer ends your terminals or anything running inside them (Claude, dev servers, ssh sessions, etc.)**. Launching WinMux again re-attaches the UI to the exact same live shells with their scrollback intact.
+- New Tauri command `attach_terminal(session_id)` — used on session restore. Rejects with `daemon_unavailable` / `not_found` so the UI can gracefully fall through to Tier 2b visual replay when the daemon isn't running or the session has died.
+- Saved sessions now record the daemon session ID per pane (`PaneData::Terminal.session_id`, `PaneNodeData.sessionId`). Forward-compatible — older sessions without the field still load.
+
+### Changed
+- `TerminalView` mount flow is now attach-first: if `restore.sessionId` is present, it calls `attachTerminal` and replays the daemon's authoritative scrollback under a dim `── Reattached ──` marker. On failure it falls through to the existing Tier 2b fresh-shell + visual replay path under `── Previous session · <time> ──`.
+- All terminal commands (`create_terminal`, `write_terminal`, `resize_terminal`, `close_terminal`, `get_cwd`, `get_scrollback`, `get_terminal_shell`) now route through the daemon when it's available, and fall back to the in-process `PtyManager` otherwise.
+
+### Infrastructure
+- New `src-tauri/src/daemon_client` module: blocking-sync named-pipe client with a dedicated reader thread that dispatches JSON-RPC responses by `id` and routes `session.output`/`exit`/`osc` push notifications to per-session sinks.
+- The daemon is spawned with `CREATE_NO_WINDOW | DETACHED_PROCESS` on Windows and released from the UI process group.
+
+### Known gaps (planned for 0.4.1+)
+- No idle-timeout on the daemon — it keeps running until explicitly terminated. A "Quit daemon too" tray option is planned.
+- Daemon crash mid-session isn't reported to the UI yet; next launch will cleanly fall back to Tier 2b.
+- MSI installer target dropped in favor of NSIS only — WiX light.exe was failing on the daemon sidecar; the NSIS installer builds cleanly and is the Tauri updater's preferred target anyway.
+
 ## [0.3.1] - 2026-04-12
 
 ### Fixed
