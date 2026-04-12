@@ -82,6 +82,7 @@ pub fn run() {
             commands::clipboard_write_text,
             commands::quit_app,
             commands::open_devtools,
+            commands::diag_log,
         ])
         .setup(move |app| {
             let app_handle = app.handle().clone();

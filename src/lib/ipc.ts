@@ -178,3 +178,9 @@ export async function quitApp(): Promise<void> {
 export async function openDevtools(): Promise<void> {
   return invoke("open_devtools");
 }
+
+export function diagLog(level: "error" | "warn" | "info" | "debug", msg: string): void {
+  // Fire-and-forget; intentionally do NOT await so a slow invoke can't
+  // stall the caller (this is used from a freeze-detection hot path).
+  invoke("diag_log", { level, msg }).catch(() => {});
+}

@@ -3,6 +3,13 @@
 All notable changes to WinMux are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.9] - 2026-04-13
+
+### Added (diagnostic)
+- Stall heartbeat: 100 ms `setInterval` measures actual fire gap; if it exceeds 300 ms we log `UI stall: <duration>ms` via a new `diag_log` Tauri command into the existing `AppData\Local\com.winmux.terminal\logs\WinMux.log`. This captures freeze durations without the user having to open DevTools before the stall.
+- `PerformanceObserver` for `longtask` entries > 200 ms — logged with name so we can tell whether it's JS, style, layout, or script-parsing.
+- Tauri `diag_log(level, msg)` command so the UI can write structured warnings/info directly into the Rust-side log file.
+
 ## [0.4.8] - 2026-04-13
 
 ### Fixed

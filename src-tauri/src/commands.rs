@@ -485,6 +485,18 @@ pub fn open_devtools(window: WebviewWindow) {
     window.open_devtools();
 }
 
+/// JS-side diagnostic log entry — written to the same tauri_plugin_log file
+/// so post-freeze investigation can correlate UI stalls with Rust events.
+#[tauri::command]
+pub fn diag_log(level: String, msg: String) {
+    match level.as_str() {
+        "error" => log::error!("[ui] {}", msg),
+        "warn" => log::warn!("[ui] {}", msg),
+        "info" => log::info!("[ui] {}", msg),
+        _ => log::debug!("[ui] {}", msg),
+    }
+}
+
 #[tauri::command]
 pub fn quit_app(app: AppHandle, daemon: State<DaemonHandle>) {
     log::info!("Explicit quit requested");

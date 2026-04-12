@@ -12,7 +12,7 @@ import DaemonBanner from "./components/Daemon/DaemonBanner";
 import type { LayoutPreset } from "./components/Sidebar/WorkspacePresets";
 import { useWorkspaceStore, getTerminalIds } from "./stores/workspaceStore";
 import { useSettingsStore } from "./stores/settingsStore";
-import { closeTerminal, saveSession, loadSession, initNotifications, showSystemNotification, writeTerminal, getCwd, getTerminalShell, getScrollback, openDevtools } from "./lib/ipc";
+import { closeTerminal, saveSession, loadSession, initNotifications, showSystemNotification, writeTerminal, getCwd, getTerminalShell, getScrollback, openDevtools, diagLog } from "./lib/ipc";
 import type { SessionData, PaneNode, PaneNodeData } from "./types";
 
 function quotePath(p: string): string {
@@ -58,6 +58,49 @@ export default function App() {
   const sessionRestoredRef = useRef(false);
 
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId);
+
+  // ── Main-thread stall heartbeat ─────────────────────────────────
+  // setInterval(100 ms) — if the actual gap between fires exceeds 300 ms the
+  // main thread was blocked for that long. Log the stall to the Tauri log
+  // file (readable after the fact via AppData\Local\com.winmux.terminal\logs)
+  // so post-freeze investigation doesn't need the user to catch the freeze
+  // with DevTools open.
+  useEffect(() => {
+    let last = performance.now();
+    const id = setInterval(() => {
+      const now = performance.now();
+      const gap = now - last;
+      last = now;
+      if (gap > 300) {
+        diagLog(
+          "warn",
+          `UI stall: ${Math.round(gap)}ms (expected ~100ms) @ ${new Date().toISOString()}`
+        );
+      }
+    }, 100);
+    return () => clearInterval(id);
+  }, []);
+
+  // Also log long tasks for extra granularity when available.
+  useEffect(() => {
+    if (typeof PerformanceObserver === "undefined") return;
+    try {
+      const obs = new PerformanceObserver((list) => {
+        for (const e of list.getEntries()) {
+          if (e.duration > 200) {
+            diagLog(
+              "warn",
+              `longtask: ${Math.round(e.duration)}ms "${(e as PerformanceEntry).name}"`
+            );
+          }
+        }
+      });
+      obs.observe({ entryTypes: ["longtask"] });
+      return () => obs.disconnect();
+    } catch {
+      // longtask entryType unsupported — ignore.
+    }
+  }, []);
 
   // ── Session Restore on mount ────────────────────────────────────
   useEffect(() => {
