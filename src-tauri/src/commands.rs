@@ -124,25 +124,42 @@ pub fn create_terminal(
     Ok(id)
 }
 
-/// Re-attach to a pre-existing daemon session (used on UI restore). Returns
+/// Re-attach to a pre-existing PTY (used on UI restore or pane split). Returns
 /// the scrollback bytes so the UI can replay them before live output resumes.
-/// Errors if daemon isn't running or the session no longer exists.
+///
+/// Priority: daemon first (sessions survive UI restart); fall back to the
+/// in-process `PtyManager` so split-induced remounts still preserve state
+/// even when the daemon isn't running.
 #[tauri::command]
 pub fn attach_terminal(
     app: AppHandle,
+    pty_manager: State<PtyState>,
     daemon: State<DaemonHandle>,
     session_id: String,
     on_output: Channel<Vec<u8>>,
 ) -> Result<AttachInfo, String> {
-    let d = daemon
-        .get()
-        .ok_or_else(|| "daemon_unavailable".to_string())?;
-    let sinks = build_daemon_sinks(app, on_output, session_id.clone());
-    let info = d.attach_session(&session_id, sinks)?;
+    if let Some(d) = daemon.get() {
+        let sinks = build_daemon_sinks(app, on_output, session_id.clone());
+        let info = d.attach_session(&session_id, sinks)?;
+        return Ok(AttachInfo {
+            scrollback_b64: base64::engine::general_purpose::STANDARD.encode(&info.scrollback),
+            shell: info.shell,
+            cwd: info.cwd,
+        });
+    }
+
+    // In-process fallback: swap the existing session's callbacks to the new
+    // UI sinks and replay scrollback. Rejects if the session has already
+    // been closed.
+    let new_callbacks = build_tauri_callbacks(app, on_output, session_id.clone());
+    let mgr = pty_manager.lock().map_err(|e| e.to_string())?;
+    let scrollback = mgr.attach(&session_id, new_callbacks)?;
+    let shell = mgr.get_shell(&session_id).unwrap_or_default();
+    let cwd = mgr.get_cwd(&session_id).unwrap_or_default();
     Ok(AttachInfo {
-        scrollback_b64: base64::engine::general_purpose::STANDARD.encode(&info.scrollback),
-        shell: info.shell,
-        cwd: info.cwd,
+        scrollback_b64: base64::engine::general_purpose::STANDARD.encode(&scrollback),
+        shell,
+        cwd,
     })
 }
 

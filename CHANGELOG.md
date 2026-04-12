@@ -3,6 +3,18 @@
 All notable changes to WinMux are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.5] - 2026-04-13
+
+### Added
+- **In-process attach path.** Splitting a pane now preserves the original terminal even when the daemon isn't running. `PtyManager` now stores each session's `SessionCallbacks` behind an `Arc<Mutex<...>>` so `PtyManager::attach` can swap the downstream sinks without disturbing the running PTY or its reader thread. `attach_terminal` tries the daemon first and falls through to the in-process manager, mirroring the rest of the terminal command routing.
+
+### Changed
+- `PtyManager::read_loop` now locks the callbacks handle per read burst and dispatches OSC + output through the current sinks — so the live set of callbacks is always applied, and a pane remount sees continuity without races. (Shell exits still fire `on_exit` under the same lock.)
+- `PtyManager::close` now also drops the entry from the callbacks map.
+
+### Fixed / closed
+- Closes the in-process limitation flagged in 0.4.4's "Known limitation" — splits preserve terminal state in both daemon and in-process modes.
+
 ## [0.4.4] - 2026-04-13
 
 ### Fixed
