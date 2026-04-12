@@ -1,4 +1,4 @@
 mod manager;
 mod session;
 
-pub use manager::PtyManager;
+pub use manager::{OscNotif, PtyManager, SessionCallbacks};

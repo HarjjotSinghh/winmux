@@ -4,10 +4,8 @@ mod store;
 pub use osc::OscParser;
 pub use store::{Notification, NotificationStore};
 
-use tauri::AppHandle;
-
-/// Send a Windows toast notification via notify-rust (works in dev mode)
-pub fn send_system_notification(_app: &AppHandle, title: &str, body: &str) {
+/// Send a Windows toast notification via notify-rust.
+pub fn send_system_notification(title: &str, body: &str) {
     let t = title.to_string();
     let b = body.to_string();
     // Spawn a thread so we don't block the caller

@@ -1,10 +1,24 @@
 use crate::config::Settings;
-use crate::notification::{Notification, NotificationStore};
-use crate::pty::PtyManager;
+use crate::notification::{self, Notification, NotificationStore};
+use crate::pty::{OscNotif, PtyManager, SessionCallbacks};
 use crate::session::SessionData;
 use std::sync::{Arc, Mutex};
 use tauri::ipc::Channel;
-use tauri::{AppHandle, State, WebviewWindow};
+use tauri::{AppHandle, Emitter, State, WebviewWindow};
+
+#[derive(Clone, serde::Serialize)]
+struct OscNotificationEvent {
+    terminal_id: String,
+    title: String,
+    body: String,
+    osc_type: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct TerminalExitEvent {
+    terminal_id: String,
+    exit_code: Option<u32>,
+}
 
 type PtyState = Arc<Mutex<PtyManager>>;
 type NotifState = Arc<Mutex<NotificationStore>>;
@@ -35,8 +49,49 @@ pub fn create_terminal(
     let c = cols.unwrap_or(80);
     let r = rows.unwrap_or(24);
 
+    let id = uuid::Uuid::new_v4().to_string();
+    let callbacks = build_tauri_callbacks(app, on_output, id.clone());
+
     let mut mgr = pty_manager.lock().map_err(|e| e.to_string())?;
-    mgr.create(&shell_path, working_dir.as_deref(), c, r, on_output, app)
+    mgr.create(id.clone(), &shell_path, working_dir.as_deref(), c, r, callbacks)?;
+    Ok(id)
+}
+
+fn build_tauri_callbacks(
+    app: AppHandle,
+    output: Channel<Vec<u8>>,
+    terminal_id: String,
+) -> SessionCallbacks {
+    let app_for_osc = app.clone();
+    let tid_for_osc = terminal_id.clone();
+    let tid_for_exit = terminal_id;
+
+    SessionCallbacks {
+        on_output: Box::new(move |data: &[u8]| {
+            let _ = output.send(data.to_vec());
+        }),
+        on_osc: Box::new(move |notif: &OscNotif| {
+            notification::send_system_notification(&notif.title, &notif.body);
+            let _ = app_for_osc.emit(
+                "osc-notification",
+                OscNotificationEvent {
+                    terminal_id: tid_for_osc.clone(),
+                    title: notif.title.clone(),
+                    body: notif.body.clone(),
+                    osc_type: notif.osc_type.clone(),
+                },
+            );
+        }),
+        on_exit: Box::new(move |code: Option<u32>| {
+            let _ = app.emit(
+                "terminal-exit",
+                TerminalExitEvent {
+                    terminal_id: tid_for_exit.clone(),
+                    exit_code: code,
+                },
+            );
+        }),
+    }
 }
 
 #[tauri::command]

@@ -140,7 +140,7 @@ fn dispatch_request(
                 Err(e) => return JsonRpcResponse::error(id, "internal", &e.to_string()),
             };
             // Send Windows toast notification
-            crate::notification::send_system_notification(app_handle, title, body);
+            crate::notification::send_system_notification(title, body);
 
             let _ = app_handle.emit("notification-added", &notif);
             JsonRpcResponse::success(id, serde_json::json!({ "id": notif.id }))

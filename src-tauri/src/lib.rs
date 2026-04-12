@@ -1,5 +1,6 @@
 mod commands;
 mod config;
+pub mod daemon;
 mod ipc;
 mod notification;
 mod pty;
@@ -8,7 +9,7 @@ mod session;
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
-pub use pty::PtyManager;
+pub use pty::{OscNotif, PtyManager, SessionCallbacks};
 
 pub fn run() {
     let pty_manager = Arc::new(Mutex::new(PtyManager::new()));
