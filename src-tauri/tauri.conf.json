@@ -1,13 +1,13 @@
 {
   "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-config-schema/schema.json",
   "productName": "WinMux",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "identifier": "com.winmux.terminal",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
     "beforeDevCommand": "pnpm dev",
-    "beforeBuildCommand": "node scripts/prepare-daemon-sidecar.mjs && pnpm build && cargo build --release --bin winmux-daemon --manifest-path src-tauri/Cargo.toml && node scripts/prepare-daemon-sidecar.mjs"
+    "beforeBuildCommand": "pnpm build && cargo build --release --bin winmux-daemon --manifest-path src-tauri/Cargo.toml"
   },
   "app": {
     "windows": [
@@ -37,7 +37,6 @@
     "active": true,
     "targets": ["nsis"],
     "createUpdaterArtifacts": true,
-    "externalBin": ["binaries/winmux-daemon"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

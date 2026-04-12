@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tauri::{AppHandle, Emitter};
 
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -50,7 +51,11 @@ struct CallResult {
 impl DaemonClient {
     /// Open the named pipe and spawn the reader thread. Returns `Err` if the
     /// pipe isn't there — callers can treat that as "daemon not running".
-    pub fn connect() -> Result<Self, String> {
+    ///
+    /// When the reader thread exits (pipe closes — daemon crash or explicit
+    /// shutdown), a `daemon-disconnected` Tauri event is emitted so the UI
+    /// can surface a banner.
+    pub fn connect(app: AppHandle) -> Result<Self, String> {
         let (reader_file, writer_file) = open_pipe_pair()?;
 
         let inner = Arc::new(Inner {
@@ -62,8 +67,11 @@ impl DaemonClient {
 
         // Spawn reader thread
         let reader_inner = inner.clone();
+        let app_for_disconnect = app;
         std::thread::spawn(move || {
             reader_loop(reader_file, reader_inner);
+            log::warn!("daemon_client: reader exited — daemon disconnected");
+            let _ = app_for_disconnect.emit("daemon-disconnected", ());
         });
 
         Ok(DaemonClient { inner })
@@ -72,9 +80,9 @@ impl DaemonClient {
     /// Connect, or try to spawn `winmux-daemon.exe` next to the current exe
     /// and reconnect. Returns `Ok(None)` if the daemon binary isn't present
     /// or couldn't be started — caller should fall back to in-process PTYs.
-    pub fn connect_or_spawn() -> Option<Self> {
+    pub fn connect_or_spawn(app: AppHandle) -> Option<Self> {
         // First attempt
-        if let Ok(client) = Self::connect() {
+        if let Ok(client) = Self::connect(app.clone()) {
             if client.ping().is_ok() {
                 log::info!("daemon: attached to existing instance");
                 return Some(client);
@@ -90,7 +98,7 @@ impl DaemonClient {
         // Retry connect up to ~3 seconds
         for attempt in 0..15 {
             std::thread::sleep(Duration::from_millis(200));
-            if let Ok(client) = Self::connect() {
+            if let Ok(client) = Self::connect(app.clone()) {
                 if client.ping().is_ok() {
                     log::info!("daemon: spawned and connected (attempt {})", attempt + 1);
                     return Some(client);
@@ -178,6 +186,11 @@ impl DaemonClient {
 
     pub fn ping(&self) -> Result<(), String> {
         self.call(method::PING, Value::Null).map(|_| ())
+    }
+
+    /// Tell the daemon to close every session and exit.
+    pub fn shutdown(&self) -> Result<(), String> {
+        self.call(method::SHUTDOWN, Value::Null).map(|_| ())
     }
 
     pub fn list_sessions(&self) -> Result<Vec<SessionInfoLite>, String> {

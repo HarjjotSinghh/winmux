@@ -15,18 +15,21 @@ pub use pty::{OscNotif, PtyManager, SessionCallbacks};
 /// Tauri-managed handle to the daemon client. `None` when the daemon
 /// couldn't be spawned (binary missing, pipe errors, etc.) — in that case
 /// commands fall back to in-process PTYs via `PtyManager`.
-pub struct DaemonHandle(pub Option<std::sync::Arc<daemon_client::DaemonClient>>);
+#[derive(Default)]
+pub struct DaemonHandle(pub std::sync::Mutex<Option<std::sync::Arc<daemon_client::DaemonClient>>>);
+
+impl DaemonHandle {
+    pub fn get(&self) -> Option<std::sync::Arc<daemon_client::DaemonClient>> {
+        self.0.lock().ok().and_then(|g| g.clone())
+    }
+}
 
 pub fn run() {
     let pty_manager = Arc::new(Mutex::new(PtyManager::new()));
     let notification_store = Arc::new(Mutex::new(notification::NotificationStore::new()));
     let config = Arc::new(Mutex::new(config::Settings::load()));
 
-    // Attempt to bring up the winmux-daemon so PTYs can survive UI restarts.
-    // If the daemon binary isn't available or the pipe can't be opened,
-    // commands gracefully fall back to in-process PtyManager.
-    let daemon = daemon_client::DaemonClient::connect_or_spawn().map(Arc::new);
-    let daemon_handle = DaemonHandle(daemon);
+    let daemon_handle = DaemonHandle::default();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
@@ -83,6 +86,22 @@ pub fn run() {
             let app_handle = app.handle().clone();
             let pty_mgr = pty_manager.clone();
 
+            // Bring up the daemon (survives UI restarts). Fall back to
+            // in-process PtyManager if the daemon can't be started.
+            {
+                let daemon_opt = daemon_client::DaemonClient::connect_or_spawn(app_handle.clone())
+                    .map(Arc::new);
+                let connected = daemon_opt.is_some();
+                if connected {
+                    log::info!("daemon: connected — PTYs will survive UI restarts");
+                } else {
+                    log::warn!("daemon: unavailable — falling back to in-process PTYs");
+                }
+                let handle = app.state::<DaemonHandle>();
+                let mut slot = handle.0.lock().expect("DaemonHandle poisoned");
+                *slot = daemon_opt;
+            }
+
             // Start the IPC server for CLI communication
             std::thread::spawn(move || {
                 if let Err(e) = ipc::start_ipc_server(app_handle, pty_mgr) {
@@ -110,6 +129,12 @@ pub fn run() {
                     }
                     "quit" => {
                         log::info!("Quit requested from tray menu");
+                        let state: tauri::State<DaemonHandle> = app.state();
+                        if let Some(d) = state.get() {
+                            if let Err(e) = d.shutdown() {
+                                log::warn!("daemon shutdown failed from tray: {}", e);
+                            }
+                        }
                         app.exit(0);
                     }
                     _ => {}

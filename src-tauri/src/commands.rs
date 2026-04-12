@@ -91,7 +91,7 @@ pub fn create_terminal(
     let r = rows.unwrap_or(24);
 
     // Prefer daemon if available (PTY survives UI restarts)
-    if let Some(d) = daemon.0.as_ref() {
+    if let Some(d) = daemon.get() {
         // We won't know the ID until the daemon responds, so build sinks with a
         // placeholder; once we know the real ID we re-register sinks keyed by it.
         // Simplest: register AFTER we know the ID by building sinks inline with the
@@ -135,8 +135,7 @@ pub fn attach_terminal(
     on_output: Channel<Vec<u8>>,
 ) -> Result<AttachInfo, String> {
     let d = daemon
-        .0
-        .as_ref()
+        .get()
         .ok_or_else(|| "daemon_unavailable".to_string())?;
     let sinks = build_daemon_sinks(app, on_output, session_id.clone());
     let info = d.attach_session(&session_id, sinks)?;
@@ -198,7 +197,7 @@ pub fn write_terminal(
     id: String,
     data: Vec<u8>,
 ) -> Result<(), String> {
-    if let Some(d) = daemon.0.as_ref() {
+    if let Some(d) = daemon.get() {
         return d.write_session(&id, &data);
     }
     let mgr = pty_manager.lock().map_err(|e| e.to_string())?;
@@ -213,7 +212,7 @@ pub fn resize_terminal(
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    if let Some(d) = daemon.0.as_ref() {
+    if let Some(d) = daemon.get() {
         return d.resize_session(&id, cols, rows);
     }
     let mut mgr = pty_manager.lock().map_err(|e| e.to_string())?;
@@ -226,7 +225,7 @@ pub fn close_terminal(
     daemon: State<DaemonHandle>,
     id: String,
 ) -> Result<(), String> {
-    if let Some(d) = daemon.0.as_ref() {
+    if let Some(d) = daemon.get() {
         return d.close_session(&id);
     }
     let mut mgr = pty_manager.lock().map_err(|e| e.to_string())?;
@@ -239,7 +238,7 @@ pub fn get_cwd(
     daemon: State<DaemonHandle>,
     id: String,
 ) -> Result<String, String> {
-    if let Some(d) = daemon.0.as_ref() {
+    if let Some(d) = daemon.get() {
         return d.get_cwd(&id);
     }
     let mgr = pty_manager.lock().map_err(|e| e.to_string())?;
@@ -252,7 +251,7 @@ pub fn get_scrollback(
     daemon: State<DaemonHandle>,
     id: String,
 ) -> Result<Vec<u8>, String> {
-    if let Some(d) = daemon.0.as_ref() {
+    if let Some(d) = daemon.get() {
         return d.get_scrollback(&id);
     }
     let mgr = pty_manager.lock().map_err(|e| e.to_string())?;
@@ -265,7 +264,7 @@ pub fn get_terminal_shell(
     daemon: State<DaemonHandle>,
     id: String,
 ) -> Result<String, String> {
-    if let Some(d) = daemon.0.as_ref() {
+    if let Some(d) = daemon.get() {
         // Daemon doesn't expose shell via a dedicated method — use list_sessions.
         if let Ok(sessions) = d.list_sessions() {
             if let Some(s) = sessions.into_iter().find(|s| s.id == id) {
@@ -462,7 +461,12 @@ pub fn window_is_maximized(window: WebviewWindow) -> Result<bool, String> {
 }
 
 #[tauri::command]
-pub fn quit_app(app: AppHandle) {
+pub fn quit_app(app: AppHandle, daemon: State<DaemonHandle>) {
     log::info!("Explicit quit requested");
+    if let Some(d) = daemon.get() {
+        if let Err(e) = d.shutdown() {
+            log::warn!("daemon shutdown failed during quit: {}", e);
+        }
+    }
     app.exit(0);
 }

@@ -3,6 +3,22 @@
 All notable changes to WinMux are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-04-13
+
+### Added
+- **Daemon idle-timeout.** `winmux-daemon.exe` now exits automatically after 30 minutes with zero live sessions (override via `WINMUX_DAEMON_IDLE_TIMEOUT_SECS=0` to disable, or any positive integer in seconds). Idle clock starts at boot, resets on every session create, restarts when the last session closes (including shells that exit on their own — the session is now auto-pruned from `PtyManager`).
+- **"Quit" paths shut the daemon down too.** Tray menu `Quit WinMux (ends all terminals)` and the first-close modal's `Quit completely` button now send `daemon.shutdown` before exiting the UI. Clicking X → "Keep running" still leaves the daemon alive.
+- **Daemon-disconnect banner.** If the `winmux-daemon` pipe closes while the UI is running (daemon crashed, killed, or idle-timed-out with the UI still open), a red toast appears bottom-left: "Terminal daemon disconnected ... Restart WinMux". Restart calls `@tauri-apps/plugin-process` `relaunch()`.
+
+### Fixed / Infrastructure
+- `DaemonClient` reader thread now emits a `daemon-disconnected` Tauri event when the pipe closes.
+- `DaemonHandle` moved to `Mutex<Option<...>>` interior mutability so the daemon client can be installed from inside the `setup` hook (which now has the real `AppHandle`).
+- Session cleanup on shell-exit: daemon's `on_exit` callback prunes the session from `PtyManager` so the idle tracker can't be fooled by zombie entries.
+- Attempted MSI installer restoration — diagnosed as WiX `ICE30` (duplicate component from `externalBin` + Cargo `[[bin]]` both registering `winmux-daemon.exe`). Dropping `externalBin` resolved the WiX error, but the MSI bundler then consistently fails with `os error 32` (file lock on `winmux.exe`) on Windows Defender-protected machines. NSIS remains the sole target; MSI stays deferred until the upstream file-lock race is fixed (or we add a WiX `fragmentPaths` workaround in a future release).
+
+### Dev notes
+- `scripts/prepare-daemon-sidecar.mjs` is no longer wired into the build (externalBin dropped) but kept in-tree for future WiX fragment work.
+
 ## [0.4.0] - 2026-04-13
 
 ### Added

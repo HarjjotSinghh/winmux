@@ -8,6 +8,7 @@ import NotificationPanel from "./components/Notification/NotificationPanel";
 import CommandPalette from "./components/CommandPalette/CommandPalette";
 import WorkspacePresets from "./components/Sidebar/WorkspacePresets";
 import UpdateBanner from "./components/Updater/UpdateBanner";
+import DaemonBanner from "./components/Daemon/DaemonBanner";
 import type { LayoutPreset } from "./components/Sidebar/WorkspacePresets";
 import { useWorkspaceStore, getTerminalIds } from "./stores/workspaceStore";
 import { useSettingsStore } from "./stores/settingsStore";
@@ -380,6 +381,7 @@ export default function App() {
       />
 
       <UpdateBanner />
+      <DaemonBanner />
     </div>
   );
 }

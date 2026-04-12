@@ -23,6 +23,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 pub const DAEMON_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -42,6 +43,10 @@ struct DaemonState {
     subs: Subscribers,
     shutdown: Arc<AtomicBool>,
     next_client_id: Arc<Mutex<u64>>,
+    /// Instant the session count last became zero. `None` means we currently
+    /// have at least one live session. Used by the idle watcher to exit the
+    /// daemon after the configured idle timeout.
+    zero_since: Arc<Mutex<Option<Instant>>>,
 }
 
 impl DaemonState {
@@ -51,6 +56,9 @@ impl DaemonState {
             subs: Arc::new(Mutex::new(HashMap::new())),
             shutdown: Arc::new(AtomicBool::new(false)),
             next_client_id: Arc::new(Mutex::new(1)),
+            // Boot-time idle clock starts now — if nothing connects before
+            // the timeout we exit cleanly instead of lingering forever.
+            zero_since: Arc::new(Mutex::new(Some(Instant::now()))),
         }
     }
 
@@ -60,11 +68,90 @@ impl DaemonState {
         *lock += 1;
         id
     }
+
+    /// Called whenever we create a session — resets the idle clock.
+    fn mark_active(&self) {
+        if let Ok(mut z) = self.zero_since.lock() {
+            *z = None;
+        }
+    }
+
+    /// Called whenever we close a session. If that was the last one, restart
+    /// the idle clock.
+    fn maybe_start_idle(&self) {
+        let session_count = self
+            .pty
+            .lock()
+            .map(|m| m.session_count())
+            .unwrap_or(0);
+        if session_count == 0 {
+            if let Ok(mut z) = self.zero_since.lock() {
+                if z.is_none() {
+                    *z = Some(Instant::now());
+                }
+            }
+        }
+    }
+}
+
+/// How long the daemon waits with zero sessions before exiting itself.
+/// Override with `WINMUX_DAEMON_IDLE_TIMEOUT_SECS`.
+fn idle_timeout() -> Duration {
+    let secs = std::env::var("WINMUX_DAEMON_IDLE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(30 * 60); // 30 minutes
+    Duration::from_secs(secs)
+}
+
+fn spawn_idle_watcher(state: Arc<DaemonState>) {
+    let timeout = idle_timeout();
+    if timeout.is_zero() {
+        log::info!("daemon: idle watcher disabled (timeout=0)");
+        return;
+    }
+    log::info!("daemon: idle watcher armed (timeout={}s)", timeout.as_secs());
+
+    std::thread::spawn(move || {
+        let tick = Duration::from_secs(30);
+        loop {
+            std::thread::sleep(tick);
+            if state.shutdown.load(Ordering::SeqCst) {
+                return;
+            }
+
+            let (count, since) = {
+                let c = state.pty.lock().map(|m| m.session_count()).unwrap_or(0);
+                let s = state
+                    .zero_since
+                    .lock()
+                    .map(|z| *z)
+                    .unwrap_or(None);
+                (c, s)
+            };
+
+            if count == 0 {
+                if let Some(t) = since {
+                    if t.elapsed() >= timeout {
+                        log::info!(
+                            "daemon: idle for {}s with zero sessions — exiting",
+                            t.elapsed().as_secs()
+                        );
+                        state.shutdown.store(true, Ordering::SeqCst);
+                        // Best-effort — close the listener loop's pipe wait by exiting the process.
+                        std::process::exit(0);
+                    }
+                }
+            }
+        }
+    });
 }
 
 pub fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     log::info!("winmux-daemon starting on {}", DAEMON_PIPE_NAME);
     let state = Arc::new(DaemonState::new());
+
+    spawn_idle_watcher(state.clone());
 
     #[cfg(windows)]
     {
@@ -281,10 +368,12 @@ fn dispatch(
             };
 
             let new_id = uuid::Uuid::new_v4().to_string();
-            let callbacks = build_broadcast_callbacks(new_id.clone(), subs);
+            let callbacks = build_broadcast_callbacks(new_id.clone(), subs, state.clone());
 
             match mgr.create(new_id.clone(), &shell, cwd.as_deref(), p.cols, p.rows, callbacks) {
                 Ok(()) => {
+                    drop(mgr);
+                    state.mark_active();
                     let result = CreatedResult { id: new_id };
                     RpcResponse::success(id, serde_json::to_value(&result).unwrap())
                 }
@@ -302,7 +391,11 @@ fn dispatch(
                 Err(e) => return RpcResponse::error(id, "internal", &e.to_string()),
             };
             match mgr.close(&p.id) {
-                Ok(_) => RpcResponse::success(id, serde_json::json!({"ok": true})),
+                Ok(_) => {
+                    drop(mgr);
+                    state.maybe_start_idle();
+                    RpcResponse::success(id, serde_json::json!({"ok": true}))
+                }
                 Err(e) => RpcResponse::error(id, "close_failed", &e),
             }
         }
@@ -434,13 +527,18 @@ fn dispatch(
     }
 }
 
-fn build_broadcast_callbacks(session_id: String, subs: Subscribers) -> SessionCallbacks {
+fn build_broadcast_callbacks(
+    session_id: String,
+    subs: Subscribers,
+    state: Arc<DaemonState>,
+) -> SessionCallbacks {
     let sid_out = session_id.clone();
     let subs_out = subs.clone();
     let sid_osc = session_id.clone();
     let subs_osc = subs.clone();
     let sid_exit = session_id;
     let subs_exit = subs;
+    let state_for_exit = state;
 
     SessionCallbacks {
         on_output: Box::new(move |data: &[u8]| {
@@ -484,6 +582,12 @@ fn build_broadcast_callbacks(session_id: String, subs: Subscribers) -> SessionCa
             if let Ok(mut subs) = subs_exit.lock() {
                 subs.remove(&sid_exit);
             }
+            // Prune the session from PtyManager so idle tracking is accurate
+            // even if the shell exits on its own (user types `exit`).
+            if let Ok(mut mgr) = state_for_exit.pty.lock() {
+                let _ = mgr.close(&sid_exit);
+            }
+            state_for_exit.maybe_start_idle();
         }),
     }
 }
