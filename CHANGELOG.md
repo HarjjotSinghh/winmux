@@ -3,6 +3,14 @@
 All notable changes to WinMux are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.6] - 2026-04-13
+
+### Fixed
+- **Critical: installer/updater failed with "Error opening file for writing: ...\winmux-daemon.exe"** when the previous install's daemon was still running (which is nearly always the case thanks to hide-to-tray + idle-timeout). NSIS doesn't kill processes before overwriting by default. Added `src-tauri/nsis/hooks.nsh` with `NSIS_HOOK_PREINSTALL` + `NSIS_HOOK_PREUNINSTALL` macros that `taskkill /F /IM winmux-daemon.exe /T` (and `winmux.exe`, `winmux-cli.exe`) before extraction. Wired via `bundle.nsis.installerHooks`. Both fresh installs and in-place updates now succeed even when WinMux is running.
+
+### CI
+- Added a workflow step that checks `TAURI_SIGNING_PRIVATE_KEY` is non-empty at job scope and prints its length + SHA1 fingerprint (not the value). Expected fingerprint is `016d72f781f6474871be159effd2ddebac1c7310` (length 348). If the CI job reports a different length or fingerprint, the GitHub secret needs to be re-pasted.
+
 ## [0.4.5] - 2026-04-13
 
 ### Added
