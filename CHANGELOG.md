@@ -3,6 +3,11 @@
 All notable changes to WinMux are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3] - 2026-04-13
+
+### Fixed
+- CI: `#[allow(clippy::type_complexity)]` on `SessionCallbacks` (`pty/manager.rs`) and `SessionSinks` (`daemon_client/mod.rs`) — clippy started flagging `Box<dyn Fn(...) + Send + Sync>` callback fields as too complex and `cargo clippy -- -D warnings` was blocking the release pipeline. No runtime change.
+
 ## [0.4.2] - 2026-04-13
 
 ### Fixed

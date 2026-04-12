@@ -18,6 +18,7 @@ pub struct OscNotif {
 /// Callbacks a caller plugs in per PTY session. These replace the old
 /// Tauri-specific `Channel<Vec<u8>>` + `AppHandle` parameters so the same
 /// `PtyManager` can be used from the Tauri UI **and** the daemon binary.
+#[allow(clippy::type_complexity)]
 pub struct SessionCallbacks {
     pub on_output: Box<dyn Fn(&[u8]) + Send + Sync>,
     pub on_osc: Box<dyn Fn(&OscNotif) + Send + Sync>,

@@ -25,6 +25,7 @@ pub const CALL_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Sinks a caller plugs in per daemon session — output bytes, OSC events, and
 /// exit code all route here.
+#[allow(clippy::type_complexity)]
 pub struct SessionSinks {
     pub on_output: Box<dyn Fn(Vec<u8>) + Send + Sync>,
     pub on_exit: Box<dyn Fn(Option<u32>) + Send + Sync>,
