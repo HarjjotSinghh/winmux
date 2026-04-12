@@ -3,6 +3,11 @@
 All notable changes to WinMux are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-04-13
+
+### Fixed
+- **Hotfix: app launched with a grey "(Not Responding)" window and hung for ~10s.** The Tauri `setup` hook was synchronously calling `DaemonClient::connect_or_spawn`, which can block the main thread for up to ~18 seconds (retries + 15 s ping timeout) on cold starts — Windows flagged the window as not responding within 5 s. Daemon connect is now spawned in a background thread so setup returns immediately and the webview renders right away. Commands issued before the daemon finishes initialising transparently fall back to the in-process `PtyManager`; subsequent commands use the daemon once it's ready.
+
 ## [0.4.1] - 2026-04-13
 
 ### Added

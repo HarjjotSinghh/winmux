@@ -86,20 +86,27 @@ pub fn run() {
             let app_handle = app.handle().clone();
             let pty_mgr = pty_manager.clone();
 
-            // Bring up the daemon (survives UI restarts). Fall back to
-            // in-process PtyManager if the daemon can't be started.
+            // Bring up the daemon in a background thread — do NOT block `setup`
+            // on it. `connect_or_spawn` can take up to ~18 seconds in the worst
+            // case (spawn retries + ping timeout), which freezes the webview
+            // and triggers Windows' "(Not Responding)". Commands issued before
+            // the daemon is ready transparently fall back to the in-process
+            // PtyManager; any subsequent ones use the daemon.
             {
-                let daemon_opt = daemon_client::DaemonClient::connect_or_spawn(app_handle.clone())
-                    .map(Arc::new);
-                let connected = daemon_opt.is_some();
-                if connected {
-                    log::info!("daemon: connected — PTYs will survive UI restarts");
-                } else {
-                    log::warn!("daemon: unavailable — falling back to in-process PTYs");
-                }
-                let handle = app.state::<DaemonHandle>();
-                let mut slot = handle.0.lock().expect("DaemonHandle poisoned");
-                *slot = daemon_opt;
+                let app_for_daemon = app_handle.clone();
+                std::thread::spawn(move || {
+                    let daemon_opt =
+                        daemon_client::DaemonClient::connect_or_spawn(app_for_daemon.clone())
+                            .map(Arc::new);
+                    if daemon_opt.is_some() {
+                        log::info!("daemon: connected — PTYs will survive UI restarts");
+                    } else {
+                        log::warn!("daemon: unavailable — using in-process PTYs");
+                    }
+                    let handle = app_for_daemon.state::<DaemonHandle>();
+                    let mut slot = handle.0.lock().expect("DaemonHandle poisoned");
+                    *slot = daemon_opt;
+                });
             }
 
             // Start the IPC server for CLI communication
