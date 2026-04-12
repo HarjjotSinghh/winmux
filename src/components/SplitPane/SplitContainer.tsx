@@ -17,6 +17,23 @@ export default function SplitContainer({
   node, onTerminalReady, onTerminalFocus, activeTerminalId, shell, onSplit, onClosePane,
 }: SplitContainerProps) {
   if (node.type === "terminal") {
+    // If this pane already has a live session ID (e.g. because the user just
+    // split a pane and React remounted the TerminalView in a new tree
+    // position), synthesize a restore hint so the remount re-attaches to the
+    // daemon-owned PTY instead of spawning a fresh shell. Without this the
+    // split would wipe the terminal's state.
+    const restoreHint =
+      node.restore ||
+      (node.terminalId
+        ? {
+            cwd: "",
+            shell: "",
+            scrollbackBase64: "",
+            savedAt: Date.now(),
+            sessionId: node.terminalId,
+          }
+        : undefined);
+
     return (
       <PaneFrame
         paneId={node.id}
@@ -25,9 +42,9 @@ export default function SplitContainer({
       >
         <TerminalView
           onReady={(tid) => onTerminalReady(node.id, tid)}
-          shell={node.restore?.shell || shell}
-          cwd={node.restore?.cwd}
-          restore={node.restore}
+          shell={restoreHint?.shell || shell}
+          cwd={restoreHint?.cwd}
+          restore={restoreHint}
           focused={node.terminalId === activeTerminalId}
           onFocus={() => { if (node.terminalId) onTerminalFocus(node.terminalId); }}
         />

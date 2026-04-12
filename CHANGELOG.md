@@ -3,6 +3,14 @@
 All notable changes to WinMux are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.4] - 2026-04-13
+
+### Fixed
+- **Critical: splitting a pane no longer wipes the original terminal.** When the user split left/right/up/down, the React tree shape changed from `{ terminal }` to `{ split, first, second }`, which unmounted and remounted the original `TerminalView` in a new position. That mount called `createTerminal`, spawning a fresh shell and losing all session state — Claude sessions, scrollback, running processes all gone. `SplitContainer` now synthesizes a `restore` hint from the existing `node.terminalId` on mount, so the remount re-attaches to the live daemon session via `attachTerminal` and the scrollback is replayed. The PTY on the daemon side was never actually killed — the bug was purely on the UI reattach path.
+
+### Known limitation
+- In-process fallback mode (daemon unavailable) still loses terminal state on split because `attach_terminal` is daemon-only. If the daemon spawns correctly, splits are now preserved. A future release will add an in-process attach path.
+
 ## [0.4.3] - 2026-04-13
 
 ### Fixed
