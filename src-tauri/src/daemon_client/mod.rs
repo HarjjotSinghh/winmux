@@ -21,7 +21,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
-pub const CALL_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long a daemon RPC may block before we fail fast. Short enough that a
+/// hung daemon won't back up the Tauri command worker pool under normal UI
+/// activity (4 terminals × periodic save + keystrokes = dozens of RPCs/sec).
+pub const CALL_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Sinks a caller plugs in per daemon session — output bytes, OSC events, and
 /// exit code all route here.

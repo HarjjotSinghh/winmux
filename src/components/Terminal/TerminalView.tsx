@@ -37,6 +37,46 @@ function formatTime(ms: number): string {
   return `${day} · ${h}:${m}`;
 }
 
+/**
+ * Coalesce xterm writes into one-per-frame flushes. When a PTY bursts output
+ * (Claude streaming tokens, `cargo build` scrollback, etc.) we can receive
+ * dozens of `on_output` callbacks per frame. Calling `term.write` synchronously
+ * for each one stalls the main thread and triggers Windows' "(Not Responding)"
+ * detection within seconds. This batches them into a single merged write
+ * scheduled via `requestAnimationFrame`, so xterm gets at most one write per
+ * 16 ms no matter how fast the PTY is producing.
+ */
+function makeCoalescedWriter(term: Terminal) {
+  let pending: Uint8Array[] = [];
+  let scheduled = false;
+  const flush = () => {
+    scheduled = false;
+    if (pending.length === 0) return;
+    if (pending.length === 1) {
+      term.write(pending[0]);
+      pending = [];
+      return;
+    }
+    let total = 0;
+    for (const p of pending) total += p.length;
+    const merged = new Uint8Array(total);
+    let off = 0;
+    for (const p of pending) {
+      merged.set(p, off);
+      off += p.length;
+    }
+    pending = [];
+    term.write(merged);
+  };
+  return (data: Uint8Array) => {
+    pending.push(data);
+    if (!scheduled) {
+      scheduled = true;
+      requestAnimationFrame(flush);
+    }
+  };
+}
+
 async function smartPasteInto(term: Terminal) {
   try {
     const result = await clipboardPaste();
@@ -153,6 +193,9 @@ export default function TerminalView({
     terminalRef.current = term;
     fitAddonRef.current = fitAddon;
 
+    // Coalesce live PTY output so bursts don't stall the main thread.
+    const writeCoalesced = makeCoalescedWriter(term);
+
     // Delayed fit — container needs a frame to have real dimensions
     requestAnimationFrame(() => {
       try {
@@ -176,11 +219,10 @@ export default function TerminalView({
       const tryAttachThenFallback = async () => {
         const restore = restoreRef.current;
 
-        // Path A: try to re-attach to a live daemon session
+        // Path A: try to re-attach to a live daemon / in-process session
         if (restore?.sessionId) {
           try {
-            const info = await attachTerminal(restore.sessionId, (data) => term.write(data));
-            // Daemon kept the PTY alive — replay its authoritative scrollback.
+            const info = await attachTerminal(restore.sessionId, writeCoalesced);
             if (info.scrollbackBase64) {
               try {
                 term.write(base64ToUint8(info.scrollbackBase64));
@@ -204,7 +246,7 @@ export default function TerminalView({
         try {
           const id = await createTerminal(
             (data) => {
-              if (replayed) term.write(data);
+              if (replayed) writeCoalesced(data);
               else pendingOutput.push(data);
             },
             {
@@ -228,7 +270,7 @@ export default function TerminalView({
             }
             term.write(footer);
             replayed = true;
-            for (const p of pendingOutput) term.write(p);
+            for (const p of pendingOutput) writeCoalesced(p);
             pendingOutput.length = 0;
           }
 

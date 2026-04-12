@@ -3,6 +3,13 @@
 All notable changes to WinMux are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.7] - 2026-04-13
+
+### Fixed
+- **Stability: ~30–60 s freeze with 4+ active terminals.** Two changes targeting the main-thread stall:
+  1. `TerminalView` now coalesces PTY output via a `requestAnimationFrame` writer. Busy sessions (Claude streaming tokens, `cargo build`, long `ls`) previously called `term.write` once per PTY chunk, dozens of times per frame. On bursts with multiple panes open, xterm's synchronous parser could stall the main thread long enough to trip Windows' "(Not Responding)" detection. Writes are now merged into one `term.write` per frame per pane — xterm still processes the same bytes, just in ≤60 calls/sec instead of thousands.
+  2. `DaemonClient::CALL_TIMEOUT` dropped from 15 s → 3 s. A hung daemon call used to tie up a Tauri command worker for 15 s, during which periodic saves (~13 RPCs / 5 s across 4 panes) could queue and starve the async runtime. With a 3 s ceiling, stuck calls fail fast and callers surface the error instead of spreading the stall.
+
 ## [0.4.6] - 2026-04-13
 
 ### Fixed
