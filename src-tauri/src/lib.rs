@@ -22,6 +22,7 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(log::LevelFilter::Info)
@@ -44,6 +45,7 @@ pub fn run() {
             commands::list_notifications,
             commands::clear_notifications,
             commands::dismiss_notification,
+            commands::send_toast,
             commands::get_settings,
             commands::update_settings,
             commands::save_session,
@@ -53,6 +55,8 @@ pub fn run() {
             commands::window_maximize,
             commands::window_close,
             commands::window_is_maximized,
+            commands::clipboard_paste,
+            commands::clipboard_write_text,
         ])
         .setup(move |app| {
             let app_handle = app.handle().clone();

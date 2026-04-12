@@ -39,6 +39,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          # No password secret — key was generated with empty password. Tauri CLI defaults to empty.
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "WinMux ${{ github.ref_name }}"
@@ -49,11 +51,14 @@ jobs:
 
             ### Installation
             Download the `.msi` installer below and run it. WinMux will be added to your Start Menu.
+            Existing installs will auto-update.
 
             ### What's New
             See [CHANGELOG](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
           releaseDraft: false
           prerelease: false
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true
 
   build-cli:
     runs-on: windows-latest

@@ -1,6 +1,6 @@
 [package]
 name = "winmux"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Terminal multiplexer for Windows, built for AI coding agents"
 license = "AGPL-3.0-or-later"
@@ -32,6 +32,7 @@ tauri-plugin-store = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-process = "2"
 tauri-plugin-clipboard-manager = "2"
+tauri-plugin-updater = "2"
 tauri-plugin-log = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -40,6 +41,7 @@ uuid = { version = "1", features = ["v4"] }
 dirs = "6"
 log = "0.4"
 chrono = { version = "0.4", features = ["serde"] }
+notify-rust = "4"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
@@ -49,3 +51,5 @@ windows-sys = { version = "0.59", features = [
   "Win32_Security",
   "Win32_Storage_FileSystem",
 ] }
+clipboard-win = "5"
+image = { version = "0.25", default-features = false, features = ["png", "bmp"] }

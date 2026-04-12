@@ -37,10 +37,10 @@ export default function Sidebar({ onNewWorkspace }: SidebarProps) {
       }}>
         <span style={{
           fontSize: "11px",
-          fontWeight: 500,
+          fontWeight: 600,
           textTransform: "uppercase",
-          letterSpacing: "0.06em",
-          color: "#525252",
+          letterSpacing: "0.08em",
+          color: "#A3A3A3",
         }}>
           Workspaces
         </span>
@@ -48,17 +48,17 @@ export default function Sidebar({ onNewWorkspace }: SidebarProps) {
           onClick={onNewWorkspace}
           aria-label="New Workspace"
           style={{
-            width: "20px",
-            height: "20px",
+            width: "22px",
+            height: "22px",
             borderRadius: "4px",
-            border: "1px solid #1F1F1F",
+            border: "1px solid #2A2A2A",
             background: "none",
-            color: "#525252",
+            color: "#A3A3A3",
             cursor: "pointer",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            fontSize: "14px",
+            fontSize: "15px",
             lineHeight: 1,
             transition: "all 150ms ease",
           }}
@@ -67,8 +67,8 @@ export default function Sidebar({ onNewWorkspace }: SidebarProps) {
             e.currentTarget.style.color = "#3B82F6";
           }}
           onMouseLeave={(e) => {
-            e.currentTarget.style.borderColor = "#1F1F1F";
-            e.currentTarget.style.color = "#525252";
+            e.currentTarget.style.borderColor = "#2A2A2A";
+            e.currentTarget.style.color = "#A3A3A3";
           }}
         >
           +

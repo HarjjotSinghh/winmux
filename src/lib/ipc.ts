@@ -1,9 +1,4 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
-import {
-  isPermissionGranted,
-  requestPermission,
-  sendNotification,
-} from "@tauri-apps/plugin-notification";
 import type { Settings, Notification, SessionData } from "../types";
 
 // ── Terminal ──────────────────────────────────────────────────────
@@ -57,32 +52,14 @@ export async function getCwd(id: string): Promise<string> {
 // ── System Notifications ──────────────────────────────────────
 
 export async function initNotifications(): Promise<void> {
-  let granted = await isPermissionGranted();
-  if (!granted) {
-    const result = await requestPermission();
-    granted = result === "granted";
-  }
-  if (!granted) {
-    console.warn("Notification permission not granted");
-  }
+  // notify-rust handles permissions natively on Windows
 }
 
 export async function showSystemNotification(
   title: string,
   body: string
 ): Promise<void> {
-  try {
-    let granted = await isPermissionGranted();
-    if (!granted) {
-      const result = await requestPermission();
-      granted = result === "granted";
-    }
-    if (granted) {
-      sendNotification({ title, body });
-    }
-  } catch (e) {
-    console.warn("Failed to send notification:", e);
-  }
+  return invoke("send_toast", { title, body });
 }
 
 // ── Notifications ──────────────────────────────────────────────
@@ -117,6 +94,21 @@ export async function saveSession(data: SessionData): Promise<void> {
 
 export async function loadSession(): Promise<SessionData | null> {
   return invoke<SessionData | null>("load_session");
+}
+
+// ── Clipboard ────────────────────────────────────────────────────
+
+export type ClipboardPaste =
+  | { kind: "text"; value: string }
+  | { kind: "paths"; paths: string[] }
+  | { kind: "empty" };
+
+export async function clipboardPaste(): Promise<ClipboardPaste> {
+  return invoke<ClipboardPaste>("clipboard_paste");
+}
+
+export async function clipboardWriteText(text: string): Promise<void> {
+  return invoke("clipboard_write_text", { text });
 }
 
 // ── Window ──────────────────────────────────────────────────────

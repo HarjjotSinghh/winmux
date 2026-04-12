@@ -19,11 +19,24 @@ export default function WorkspaceTab({
   const [editValue, setEditValue] = useState(workspace.name);
   const [showColor, setShowColor] = useState(false);
   const [hovered, setHovered] = useState(false);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (editing) { inputRef.current?.focus(); inputRef.current?.select(); }
   }, [editing]);
+
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    window.addEventListener("click", close);
+    window.addEventListener("contextmenu", close);
+    window.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("contextmenu", close);
+    };
+  }, [menu]);
 
   const commit = () => {
     const v = editValue.trim();
@@ -32,10 +45,21 @@ export default function WorkspaceTab({
     setEditing(false);
   };
 
+  const startRename = () => {
+    setEditing(true);
+    setEditValue(workspace.name);
+    setMenu(null);
+  };
+
   return (
     <div
       onClick={onClick}
-      onDoubleClick={(e) => { e.stopPropagation(); setEditing(true); setEditValue(workspace.name); }}
+      onDoubleClick={(e) => { e.stopPropagation(); startRename(); }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setMenu({ x: e.clientX, y: e.clientY });
+      }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
@@ -101,7 +125,7 @@ export default function WorkspaceTab({
             <div style={{
               fontSize: "12px",
               fontWeight: isActive ? 500 : 400,
-              color: isActive ? "#E5E5E5" : "#737373",
+              color: isActive ? "#F5F5F5" : hovered ? "#D4D4D4" : "#B4B4B4",
               whiteSpace: "nowrap",
               overflow: "hidden",
               textOverflow: "ellipsis",
@@ -109,7 +133,7 @@ export default function WorkspaceTab({
               {workspace.name}
             </div>
             {workspace.gitBranch && (
-              <div style={{ fontSize: "10px", color: "#404040", marginTop: "1px" }}>
+              <div style={{ fontSize: "10px", color: "#8A8A8A", marginTop: "1px" }}>
                 {workspace.gitBranch}
               </div>
             )}
@@ -119,7 +143,7 @@ export default function WorkspaceTab({
 
       {/* Shortcut hint */}
       {index < 9 && !editing && (
-        <span style={{ fontSize: "10px", color: "#333", flexShrink: 0, fontFamily: "monospace" }}>
+        <span style={{ fontSize: "10px", color: "#666", flexShrink: 0, fontFamily: "monospace" }}>
           {index + 1}
         </span>
       )}
@@ -152,7 +176,7 @@ export default function WorkspaceTab({
           style={{
             background: "none",
             border: "none",
-            color: "#404040",
+            color: "#A3A3A3",
             cursor: "pointer",
             fontSize: "12px",
             padding: "0",
@@ -161,11 +185,76 @@ export default function WorkspaceTab({
             transition: "color 150ms",
           }}
           onMouseEnter={(e) => { e.currentTarget.style.color = "#EF4444"; }}
-          onMouseLeave={(e) => { e.currentTarget.style.color = "#404040"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.color = "#A3A3A3"; }}
         >
           x
         </button>
       )}
+
+      {/* Context menu */}
+      {menu && (
+        <div
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            position: "fixed",
+            top: menu.y,
+            left: menu.x,
+            minWidth: 160,
+            background: "#1A1A1A",
+            border: "1px solid #2A2A2A",
+            borderRadius: 6,
+            padding: 4,
+            boxShadow: "0 4px 16px rgba(0, 0, 0, 0.5)",
+            zIndex: 1000,
+          }}
+        >
+          <MenuItem onClick={startRename}>Rename</MenuItem>
+          <MenuItem onClick={() => { setShowColor(true); setMenu(null); }}>
+            Change Color
+          </MenuItem>
+          {onClose && (
+            <>
+              <div style={{ height: 1, background: "#2A2A2A", margin: "4px 0" }} />
+              <MenuItem
+                danger
+                onClick={() => { onClose(); setMenu(null); }}
+              >
+                Delete Workspace
+              </MenuItem>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MenuItem({
+  children,
+  onClick,
+  danger,
+}: {
+  children: React.ReactNode;
+  onClick: () => void;
+  danger?: boolean;
+}) {
+  const [hover, setHover] = useState(false);
+  return (
+    <div
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        padding: "6px 10px",
+        fontSize: 12,
+        borderRadius: 4,
+        cursor: "pointer",
+        color: hover ? (danger ? "#EF4444" : "#F5F5F5") : danger ? "#D4D4D4" : "#D4D4D4",
+        background: hover ? (danger ? "rgba(239, 68, 68, 0.1)" : "#2A2A2A") : "transparent",
+        transition: "all 100ms ease",
+      }}
+    >
+      {children}
     </div>
   );
 }

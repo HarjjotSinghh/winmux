@@ -5,8 +5,31 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
-import { createTerminal, writeTerminal, resizeTerminal } from "../../lib/ipc";
+import {
+  createTerminal,
+  writeTerminal,
+  resizeTerminal,
+  clipboardPaste,
+  clipboardWriteText,
+} from "../../lib/ipc";
 import { getXtermTheme } from "../../lib/theme";
+
+function quotePath(p: string): string {
+  return /[\s"']/.test(p) ? `"${p.replace(/"/g, '\\"')}"` : p;
+}
+
+async function smartPasteInto(term: Terminal) {
+  try {
+    const result = await clipboardPaste();
+    if (result.kind === "text") {
+      term.paste(result.value);
+    } else if (result.kind === "paths") {
+      term.paste(result.paths.map(quotePath).join(" "));
+    }
+  } catch (e) {
+    console.error("paste failed:", e);
+  }
+}
 
 interface TerminalViewProps {
   onReady: (terminalId: string) => void;
@@ -59,7 +82,39 @@ export default function TerminalView({
     term.loadAddon(new WebLinksAddon());
     term.loadAddon(new Unicode11Addon());
 
+    // Ctrl+Shift+C to copy selection, Ctrl+Shift+V to paste.
+    // Return false to tell xterm we've handled the event.
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== "keydown") return true;
+      if (e.ctrlKey && e.shiftKey && (e.key === "C" || e.key === "c")) {
+        const sel = term.getSelection();
+        if (sel) {
+          clipboardWriteText(sel).catch(console.error);
+          term.clearSelection();
+          return false;
+        }
+      }
+      if (e.ctrlKey && e.shiftKey && (e.key === "V" || e.key === "v")) {
+        smartPasteInto(term);
+        return false;
+      }
+      return true;
+    });
+
     term.open(container);
+
+    // Right-click to paste
+    container.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      // If user has a selection, copy it; otherwise paste.
+      const sel = term.getSelection();
+      if (sel) {
+        clipboardWriteText(sel).catch(console.error);
+        term.clearSelection();
+      } else {
+        smartPasteInto(term);
+      }
+    });
 
     // Try WebGL, fall back silently to canvas
     try {

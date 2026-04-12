@@ -10,9 +10,10 @@
   --surface-hover: #1A1A1A;
   --border: #1F1F1F;
   --border-hover: #2A2A2A;
-  --text: #E5E5E5;
-  --text-secondary: #737373;
-  --text-muted: #404040;
+  --text: #F5F5F5;
+  --text-secondary: #B4B4B4;
+  --text-muted: #8A8A8A;
+  --text-subtle: #666666;
   --accent: #3B82F6;
   --accent-hover: #2563EB;
   --accent-subtle: rgba(59, 130, 246, 0.08);
@@ -77,4 +78,9 @@ button:focus:not(:focus-visible) {
 .xterm-viewport::-webkit-scrollbar-thumb {
   background: var(--border);
   border-radius: 2px;
+}
+
+@keyframes winmux-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }

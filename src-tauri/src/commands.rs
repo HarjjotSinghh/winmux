@@ -99,6 +99,25 @@ pub fn dismiss_notification(store: State<NotifState>, id: String) -> Result<(), 
     Ok(())
 }
 
+// ── System Notification Command ────────────────────────────────────
+
+#[tauri::command]
+pub fn send_toast(title: String, body: String) {
+    let t = title;
+    let b = body;
+    std::thread::spawn(move || {
+        if let Err(e) = notify_rust::Notification::new()
+            .appname("WinMux")
+            .summary(&t)
+            .body(&b)
+            .timeout(notify_rust::Timeout::Milliseconds(5000))
+            .show()
+        {
+            log::warn!("Toast failed: {}", e);
+        }
+    });
+}
+
 // ── Settings Commands ──────────────────────────────────────────────
 
 #[tauri::command]
@@ -124,6 +143,89 @@ pub fn save_session(data: SessionData) -> Result<(), String> {
 #[tauri::command]
 pub fn load_session() -> Option<SessionData> {
     SessionData::load()
+}
+
+// ── Clipboard Commands ──────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum ClipboardPaste {
+    Text { value: String },
+    Paths { paths: Vec<String> },
+    Empty,
+}
+
+#[tauri::command]
+pub fn clipboard_paste() -> Result<ClipboardPaste, String> {
+    #[cfg(windows)]
+    {
+        use clipboard_win::{formats, get_clipboard};
+
+        // 1. File list (CF_HDROP) — user copied files in Explorer
+        if let Ok(files) = get_clipboard::<Vec<String>, _>(formats::FileList) {
+            if !files.is_empty() {
+                return Ok(ClipboardPaste::Paths { paths: files });
+            }
+        }
+
+        // 2. Image (CF_DIB / CF_BITMAP) — user pasted a screenshot
+        if let Ok(bmp_bytes) = get_clipboard::<Vec<u8>, _>(formats::Bitmap) {
+            if !bmp_bytes.is_empty() {
+                match save_clipboard_image(&bmp_bytes) {
+                    Ok(path) => return Ok(ClipboardPaste::Paths { paths: vec![path] }),
+                    Err(e) => log::warn!("Failed to save clipboard image: {}", e),
+                }
+            }
+        }
+
+        // 3. Text (CF_UNICODETEXT)
+        if let Ok(text) = get_clipboard::<String, _>(formats::Unicode) {
+            if !text.is_empty() {
+                return Ok(ClipboardPaste::Text { value: text });
+            }
+        }
+
+        Ok(ClipboardPaste::Empty)
+    }
+    #[cfg(not(windows))]
+    {
+        Err("Clipboard paste only implemented for Windows".into())
+    }
+}
+
+#[cfg(windows)]
+fn save_clipboard_image(bmp_bytes: &[u8]) -> Result<String, String> {
+    use chrono::Utc;
+    use std::fs;
+    use std::io::Cursor;
+
+    let img = image::load(Cursor::new(bmp_bytes), image::ImageFormat::Bmp)
+        .map_err(|e| format!("decode bmp: {}", e))?;
+
+    let temp_dir = std::env::temp_dir().join("winmux").join("clipboard");
+    fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
+
+    let filename = format!("winmux-clipboard-{}.png", Utc::now().format("%Y%m%d-%H%M%S%3f"));
+    let path = temp_dir.join(filename);
+
+    img.save_with_format(&path, image::ImageFormat::Png)
+        .map_err(|e| format!("encode png: {}", e))?;
+
+    Ok(path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+pub fn clipboard_write_text(text: String) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use clipboard_win::{formats, set_clipboard};
+        set_clipboard(formats::Unicode, &text).map_err(|e| e.to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = text;
+        Err("Clipboard write only implemented for Windows".into())
+    }
 }
 
 // ── Window Commands ──────────────────────────────────────────────
