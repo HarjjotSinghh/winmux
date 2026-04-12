@@ -60,7 +60,7 @@ fn create_named_pipe() -> Result<isize, Box<dyn std::error::Error>> {
         )
     };
 
-    if handle.is_null() || handle == INVALID_HANDLE_VALUE as *mut std::ffi::c_void {
+    if handle.is_null() || std::ptr::eq(handle, INVALID_HANDLE_VALUE) {
         return Err("Failed to create named pipe".into());
     }
     Ok(handle as isize)

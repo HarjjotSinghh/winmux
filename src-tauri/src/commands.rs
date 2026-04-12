@@ -13,6 +13,7 @@ type ConfigState = Arc<Mutex<Settings>>;
 // ── Terminal Commands ──────────────────────────────────────────────
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn create_terminal(
     app: AppHandle,
     pty_manager: State<PtyState>,

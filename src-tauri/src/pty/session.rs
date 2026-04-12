@@ -13,10 +13,13 @@ pub struct PtySession {
     master: Box<dyn MasterPty + Send>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     child: Box<dyn Child + Send + Sync>,
+    #[allow(dead_code)]
     pub cols: u16,
+    #[allow(dead_code)]
     pub rows: u16,
     pub cwd: PathBuf,
     pub shell: String,
+    #[allow(dead_code)]
     pub title: String,
     pub scrollback: ScrollbackBuf,
 }
@@ -119,6 +122,7 @@ impl PtySession {
             .map_err(|e| format!("Failed to resize PTY: {}", e))
     }
 
+    #[allow(dead_code)]
     pub fn is_alive(&mut self) -> bool {
         self.child
             .try_wait()

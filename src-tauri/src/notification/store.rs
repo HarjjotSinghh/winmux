@@ -51,10 +51,12 @@ impl NotificationStore {
         self.notifications.clone()
     }
 
+    #[allow(dead_code)]
     pub fn unread_count(&self) -> usize {
         self.notifications.iter().filter(|n| !n.read).count()
     }
 
+    #[allow(dead_code)]
     pub fn unread_for_terminal(&self, terminal_id: &str) -> usize {
         self.notifications
             .iter()
@@ -72,6 +74,7 @@ impl NotificationStore {
         self.notifications.clear();
     }
 
+    #[allow(dead_code)]
     pub fn clear_for_terminal(&mut self, terminal_id: &str) {
         self.notifications.retain(|n| n.terminal_id != terminal_id);
     }

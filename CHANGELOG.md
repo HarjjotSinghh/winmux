@@ -3,6 +3,17 @@
 All notable changes to WinMux are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-04-12
+
+### Fixed
+- CI build: `cargo clippy -- -D warnings` failures that blocked the v0.3.0 release pipeline:
+  - Added `#[allow(dead_code)]` on legitimately unused API hooks (`NotificationStore::{unread_count, unread_for_terminal, clear_for_terminal}`, `PtySession::{cols, rows, title, is_alive}`) that will be consumed by the daemon refactor
+  - `#[allow(clippy::too_many_arguments)]` on the Tauri `create_terminal` command (8 args is natural given Tauri's injection model)
+  - Replaced raw-pointer comparison in `ipc::server` with `std::ptr::eq` and dropped the redundant `*mut c_void` cast on `INVALID_HANDLE_VALUE`
+  - Added `Default` impl for `PtyManager`
+
+No functional changes.
+
 ## [0.3.0] - 2026-04-12
 
 ### Added
