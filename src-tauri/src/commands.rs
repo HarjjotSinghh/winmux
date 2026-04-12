@@ -477,13 +477,27 @@ pub fn window_is_maximized(window: WebviewWindow) -> Result<bool, String> {
     window.is_maximized().map_err(|e| e.to_string())
 }
 
+/// Open the webview's DevTools. Available in release builds because we ship
+/// with the tauri `devtools` feature enabled — we need it to diagnose UI
+/// freezes in installed copies.
+#[tauri::command]
+pub fn open_devtools(window: WebviewWindow) {
+    window.open_devtools();
+}
+
 #[tauri::command]
 pub fn quit_app(app: AppHandle, daemon: State<DaemonHandle>) {
     log::info!("Explicit quit requested");
+    // Fire daemon shutdown in a detached thread with a hard wall-clock cap so
+    // a hung daemon can never delay our exit. The UI must feel instant.
     if let Some(d) = daemon.get() {
-        if let Err(e) = d.shutdown() {
-            log::warn!("daemon shutdown failed during quit: {}", e);
-        }
+        std::thread::spawn(move || {
+            if let Err(e) = d.shutdown() {
+                log::warn!("daemon shutdown failed during quit: {}", e);
+            }
+        });
     }
+    // Give the shutdown request ~250 ms head-start, then exit regardless.
+    std::thread::sleep(std::time::Duration::from_millis(250));
     app.exit(0);
 }

@@ -3,6 +3,15 @@
 All notable changes to WinMux are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.8] - 2026-04-13
+
+### Fixed
+- **Close modal buttons now respond even under load.** `quit_app` no longer blocks waiting for `daemon.shutdown()` — it spawns the shutdown RPC on a detached thread with a 250 ms head-start, then exits regardless. Previously "Quit completely" could stall for 3–15 s on a hung daemon and users saw nothing happen.
+- **Auto-save no longer stacks.** Added in-flight guard on the 5 s `setInterval` save so a slow save (daemon call timeout, heavy scrollback fetch) can't let subsequent saves pile up and starve the Tauri async runtime.
+
+### Added
+- **DevTools shortcut (diagnostic)**: `Ctrl+Shift+Alt+I` opens the Chrome DevTools window in release builds. Enabled via the `devtools` tauri feature so the shipped installer can be profiled in-place.
+
 ## [0.4.7] - 2026-04-13
 
 ### Fixed

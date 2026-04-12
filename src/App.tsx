@@ -12,7 +12,7 @@ import DaemonBanner from "./components/Daemon/DaemonBanner";
 import type { LayoutPreset } from "./components/Sidebar/WorkspacePresets";
 import { useWorkspaceStore, getTerminalIds } from "./stores/workspaceStore";
 import { useSettingsStore } from "./stores/settingsStore";
-import { closeTerminal, saveSession, loadSession, initNotifications, showSystemNotification, writeTerminal, getCwd, getTerminalShell, getScrollback } from "./lib/ipc";
+import { closeTerminal, saveSession, loadSession, initNotifications, showSystemNotification, writeTerminal, getCwd, getTerminalShell, getScrollback, openDevtools } from "./lib/ipc";
 import type { SessionData, PaneNode, PaneNodeData } from "./types";
 
 function quotePath(p: string): string {
@@ -87,7 +87,13 @@ export default function App() {
   useEffect(() => {
     if (workspaces.length === 0) return;
 
+    // Guard: if a save is still in-flight when the next interval fires, skip.
+    // Without this, a slow save (e.g. blocked on a hung daemon call) lets
+    // subsequent saves pile up and starve the async runtime.
+    let saveInFlight = false;
     const doSave = async (includeScrollback: boolean) => {
+      if (saveInFlight) return;
+      saveInFlight = true;
       try {
         const wsData = await Promise.all(
           workspaces.map(async (ws) => ({
@@ -106,6 +112,8 @@ export default function App() {
         await saveSession(sessionData);
       } catch (e) {
         console.warn("session save failed:", e);
+      } finally {
+        saveInFlight = false;
       }
     };
 
@@ -256,6 +264,13 @@ export default function App() {
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.shiftKey && (e.key === "I" || e.key === "i") && e.altKey) {
+        // Ctrl+Shift+Alt+I — open devtools (diagnostic; avoid colliding
+        // with the terminal's own Ctrl+Shift+I).
+        e.preventDefault();
+        openDevtools().catch(console.error);
+        return;
+      }
       if (e.ctrlKey && e.shiftKey && e.key === "T") {
         e.preventDefault();
         setPresetPickerVisible(true);

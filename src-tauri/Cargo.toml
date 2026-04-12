@@ -1,6 +1,6 @@
 [package]
 name = "winmux"
-version = "0.4.7"
+version = "0.4.8"
 edition = "2021"
 description = "Terminal multiplexer for Windows, built for AI coding agents"
 license = "AGPL-3.0-or-later"
@@ -28,7 +28,7 @@ path = "src/bin/winmux-daemon.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", features = ["tray-icon", "devtools"] }
 tauri-plugin-notification = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-fs = "2"

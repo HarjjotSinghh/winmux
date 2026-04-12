@@ -174,3 +174,7 @@ export async function windowIsMaximized(): Promise<boolean> {
 export async function quitApp(): Promise<void> {
   return invoke("quit_app");
 }
+
+export async function openDevtools(): Promise<void> {
+  return invoke("open_devtools");
+}
