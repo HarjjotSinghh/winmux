@@ -3,6 +3,16 @@
 All notable changes to WinMux are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.11] - 2026-04-13
+
+### Fixed — daemon disconnects no longer require manual restart
+- **Auto-respawn supervisor.** When `winmux-daemon.exe` dies, a background thread now drains the in-flight RPCs, fires `terminal-exit` on every attached tab (so each pane cleanly renders "[process exited]" instead of going silently deaf), and calls `connect_or_spawn` to bring up a fresh daemon. The new client is swapped into `DaemonHandle` so subsequent commands transparently use it.
+- **Three-state toast replaces the blocking banner.** `daemon-reconnecting` shows a small amber toast with a spinner; `daemon-reconnected` shows a green confirmation that auto-dismisses after 3 s; the red "Restart WinMux" banner is now only surfaced as a last resort.
+- **Crash-loop cap.** A shared rolling counter (static `AtomicU64`/`AtomicU32`) gates auto-respawn at 3 crashes per 60 s. If the daemon is panicking on startup, we stop churning and emit `daemon-dead` so the hard failure actually reaches the user instead of an infinite silent restart loop.
+
+### Added (diagnostic)
+- **Daemon stderr/stdout redirect.** `spawn_daemon_detached` now routes the daemon's stdio into `%LOCALAPPDATA%\WinMux\daemon.log` (append mode). With `DETACHED_PROCESS`, the daemon has no console, so panics and crashes previously vanished silently. This is the first real forensic trail for "why did the daemon disconnect?". The log path is recorded in the main `WinMux.log` at spawn time.
+
 ## [0.4.10] - 2026-04-13
 
 ### Fixed — root cause of the "buttons don't work" modal

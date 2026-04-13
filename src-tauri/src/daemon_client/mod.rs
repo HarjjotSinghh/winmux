@@ -15,11 +15,11 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// How long a daemon RPC may block before we fail fast. Short enough that a
 /// hung daemon won't back up the Tauri command worker pool under normal UI
@@ -57,9 +57,18 @@ impl DaemonClient {
     /// pipe isn't there — callers can treat that as "daemon not running".
     ///
     /// When the reader thread exits (pipe closes — daemon crash or explicit
-    /// shutdown), a `daemon-disconnected` Tauri event is emitted so the UI
-    /// can surface a banner.
+    /// shutdown), a supervisor thread kicks in: existing sessions are marked
+    /// exited (their PTYs died with the daemon), and we attempt to respawn.
+    /// A shared crash-rate gate prevents a panic-looping daemon from being
+    /// restarted forever.
     pub fn connect(app: AppHandle) -> Result<Self, String> {
+        Self::connect_with_supervision(app, true)
+    }
+
+    /// Internal variant. `supervise=false` during the initial `connect_or_spawn`
+    /// retry loop so probe connections that close immediately don't trigger
+    /// a full supervisor run.
+    fn connect_with_supervision(app: AppHandle, supervise: bool) -> Result<Self, String> {
         let (reader_file, writer_file) = open_pipe_pair()?;
 
         let inner = Arc::new(Inner {
@@ -69,13 +78,35 @@ impl DaemonClient {
             sinks: Arc::new(Mutex::new(HashMap::new())),
         });
 
-        // Spawn reader thread
         let reader_inner = inner.clone();
         let app_for_disconnect = app;
         std::thread::spawn(move || {
-            reader_loop(reader_file, reader_inner);
+            reader_loop(reader_file, reader_inner.clone());
             log::warn!("daemon_client: reader exited — daemon disconnected");
-            let _ = app_for_disconnect.emit("daemon-disconnected", ());
+
+            // PTYs die with the daemon. Notify every attached tab so the UI
+            // can render "[process exited]" instead of silently going deaf.
+            if let Ok(mut sinks) = reader_inner.sinks.lock() {
+                for (id, s) in sinks.drain() {
+                    log::info!("daemon_client: marking session {} exited (daemon gone)", id);
+                    (s.on_exit)(None);
+                }
+            }
+
+            // Unblock any in-flight RPC so callers don't wait the full 3s.
+            if let Ok(mut pending) = reader_inner.pending.lock() {
+                for (_id, tx) in pending.drain() {
+                    let _ = tx.send(CallResult {
+                        ok: false,
+                        result: None,
+                        error_message: Some("daemon disconnected".into()),
+                    });
+                }
+            }
+
+            if supervise {
+                std::thread::spawn(move || supervise_reconnect(app_for_disconnect));
+            }
         });
 
         Ok(DaemonClient { inner })
@@ -85,11 +116,17 @@ impl DaemonClient {
     /// and reconnect. Returns `Ok(None)` if the daemon binary isn't present
     /// or couldn't be started — caller should fall back to in-process PTYs.
     pub fn connect_or_spawn(app: AppHandle) -> Option<Self> {
-        // First attempt
-        if let Ok(client) = Self::connect(app.clone()) {
-            if client.ping().is_ok() {
-                log::info!("daemon: attached to existing instance");
-                return Some(client);
+        // First attempt — probe unsupervised so a failed ping (stale pipe)
+        // doesn't immediately kick off a supervisor run.
+        if let Ok(probe) = Self::connect_with_supervision(app.clone(), false) {
+            if probe.ping().is_ok() {
+                drop(probe);
+                if let Ok(client) = Self::connect(app.clone()) {
+                    if client.ping().is_ok() {
+                        log::info!("daemon: attached to existing instance");
+                        return Some(client);
+                    }
+                }
             }
         }
 
@@ -99,13 +136,19 @@ impl DaemonClient {
             return None;
         }
 
-        // Retry connect up to ~3 seconds
+        // Retry connect up to ~3 seconds. Probes are unsupervised; only the
+        // final returned client has a supervisor attached.
         for attempt in 0..15 {
             std::thread::sleep(Duration::from_millis(200));
-            if let Ok(client) = Self::connect(app.clone()) {
-                if client.ping().is_ok() {
-                    log::info!("daemon: spawned and connected (attempt {})", attempt + 1);
-                    return Some(client);
+            if let Ok(probe) = Self::connect_with_supervision(app.clone(), false) {
+                if probe.ping().is_ok() {
+                    drop(probe);
+                    if let Ok(client) = Self::connect(app.clone()) {
+                        if client.ping().is_ok() {
+                            log::info!("daemon: spawned and connected (attempt {})", attempt + 1);
+                            return Some(client);
+                        }
+                    }
                 }
             }
         }
@@ -115,10 +158,75 @@ impl DaemonClient {
     }
 }
 
+// ── Supervisor / crash-rate gate ────────────────────────────────────
+
+static CRASH_WINDOW_START: AtomicU64 = AtomicU64::new(0);
+static CRASH_COUNT: AtomicU32 = AtomicU32::new(0);
+
+const MAX_CRASHES_IN_WINDOW: u32 = 3;
+const CRASH_WINDOW_SECS: u64 = 60;
+
+fn should_respawn() -> bool {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let start = CRASH_WINDOW_START.load(Ordering::SeqCst);
+
+    if start == 0 || now.saturating_sub(start) > CRASH_WINDOW_SECS {
+        CRASH_WINDOW_START.store(now, Ordering::SeqCst);
+        CRASH_COUNT.store(1, Ordering::SeqCst);
+        true
+    } else {
+        let count = CRASH_COUNT.fetch_add(1, Ordering::SeqCst) + 1;
+        count <= MAX_CRASHES_IN_WINDOW
+    }
+}
+
+/// Runs in its own thread after the daemon pipe closes. Attempts one
+/// respawn via `connect_or_spawn` (which internally retries pipe open for
+/// ~3s) and installs the new client into the managed `DaemonHandle`.
+fn supervise_reconnect(app: AppHandle) {
+    if !should_respawn() {
+        log::error!(
+            "daemon: crash-loop detected (>{} crashes in {}s) — giving up",
+            MAX_CRASHES_IN_WINDOW, CRASH_WINDOW_SECS
+        );
+        let _ = app.emit("daemon-dead", ());
+        return;
+    }
+
+    let _ = app.emit("daemon-reconnecting", ());
+    log::info!("daemon: supervisor attempting respawn");
+
+    std::thread::sleep(Duration::from_millis(500));
+
+    match DaemonClient::connect_or_spawn(app.clone()) {
+        Some(client) => {
+            let arc = Arc::new(client);
+            let state: tauri::State<crate::DaemonHandle> = app.state();
+            if let Ok(mut slot) = state.0.lock() {
+                *slot = Some(arc);
+            }
+            log::info!("daemon: supervisor reconnected successfully");
+            let _ = app.emit("daemon-reconnected", ());
+        }
+        None => {
+            log::error!("daemon: supervisor respawn failed");
+            let state: tauri::State<crate::DaemonHandle> = app.state();
+            if let Ok(mut slot) = state.0.lock() {
+                *slot = None;
+            }
+            let _ = app.emit("daemon-dead", ());
+        }
+    }
+}
+
 #[cfg(windows)]
 fn spawn_daemon_detached() -> Result<(), String> {
+    use std::fs::OpenOptions;
     use std::os::windows::process::CommandExt;
-    use std::process::Command;
+    use std::process::{Command, Stdio};
 
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     const DETACHED_PROCESS: u32 = 0x0000_0008;
@@ -133,13 +241,49 @@ fn spawn_daemon_detached() -> Result<(), String> {
         return Err(format!("daemon binary missing at {}", daemon_exe.display()));
     }
 
-    log::info!("daemon: spawning {}", daemon_exe.display());
+    // Redirect daemon stdout+stderr to a log file. With DETACHED_PROCESS the
+    // daemon has no console, so without this any panic/crash vanishes silently.
+    // Having the file lets us do post-mortem on "why did it disconnect?".
+    let mut stdout_stdio = Stdio::null();
+    let mut stderr_stdio = Stdio::null();
+    let log_path_msg = match daemon_log_path() {
+        Ok(path) => {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            match OpenOptions::new().create(true).append(true).open(&path) {
+                Ok(f) => match f.try_clone() {
+                    Ok(f2) => {
+                        stdout_stdio = Stdio::from(f);
+                        stderr_stdio = Stdio::from(f2);
+                        format!(" (log: {})", path.display())
+                    }
+                    Err(e) => format!(" (log open failed: clone {})", e),
+                },
+                Err(e) => format!(" (log open failed: {})", e),
+            }
+        }
+        Err(e) => format!(" (log path unresolved: {})", e),
+    };
+
+    log::info!("daemon: spawning {}{}", daemon_exe.display(), log_path_msg);
     Command::new(&daemon_exe)
         .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
+        .stdout(stdout_stdio)
+        .stderr(stderr_stdio)
         .spawn()
         .map_err(|e| format!("spawn daemon: {}", e))?;
 
     Ok(())
+}
+
+#[cfg(windows)]
+fn daemon_log_path() -> Result<std::path::PathBuf, String> {
+    let local_appdata = std::env::var("LOCALAPPDATA")
+        .map_err(|_| "LOCALAPPDATA env var not set".to_string())?;
+    Ok(std::path::PathBuf::from(local_appdata)
+        .join("WinMux")
+        .join("daemon.log"))
 }
 
 #[cfg(not(windows))]
