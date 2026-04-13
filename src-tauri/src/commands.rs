@@ -485,6 +485,19 @@ pub fn open_devtools(window: WebviewWindow) {
     window.open_devtools();
 }
 
+/// Keepalive: UI calls this on a 60s interval so the daemon-side pipe
+/// sees continuous activity. With the connection-aware idle watcher
+/// (v0.4.12+) this is defence-in-depth — it also surfaces half-open
+/// pipes quickly, since a stale pipe will make the ping fail fast.
+#[tauri::command]
+pub fn ping_daemon(daemon: State<DaemonHandle>) -> Result<bool, String> {
+    if let Some(d) = daemon.get() {
+        d.ping().map(|_| true)
+    } else {
+        Ok(false)
+    }
+}
+
 /// JS-side diagnostic log entry — written to the same tauri_plugin_log file
 /// so post-freeze investigation can correlate UI stalls with Rust events.
 #[tauri::command]
@@ -500,6 +513,9 @@ pub fn diag_log(level: String, msg: String) {
 #[tauri::command]
 pub fn quit_app(app: AppHandle, daemon: State<DaemonHandle>) {
     log::info!("Explicit quit requested");
+    // Mark first so the reconnect supervisor skips respawn when the pipe
+    // closes during teardown.
+    daemon.mark_shutting_down();
     // Fire daemon shutdown in a detached thread with a hard wall-clock cap so
     // a hung daemon can never delay our exit. The UI must feel instant.
     if let Some(d) = daemon.get() {

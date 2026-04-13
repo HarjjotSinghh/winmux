@@ -7,6 +7,7 @@ mod notification;
 mod pty;
 mod session;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
@@ -15,12 +16,28 @@ pub use pty::{OscNotif, PtyManager, SessionCallbacks};
 /// Tauri-managed handle to the daemon client. `None` when the daemon
 /// couldn't be spawned (binary missing, pipe errors, etc.) — in that case
 /// commands fall back to in-process PTYs via `PtyManager`.
+///
+/// The `shutting_down` flag is set before any intentional shutdown RPC
+/// (tray Quit, `quit_app` command). The reconnect supervisor checks this
+/// flag when the pipe closes and skips both respawn and the crash counter
+/// so planned exits during app-close aren't misread as crashes.
 #[derive(Default)]
-pub struct DaemonHandle(pub std::sync::Mutex<Option<std::sync::Arc<daemon_client::DaemonClient>>>);
+pub struct DaemonHandle {
+    pub client: std::sync::Mutex<Option<std::sync::Arc<daemon_client::DaemonClient>>>,
+    pub shutting_down: AtomicBool,
+}
 
 impl DaemonHandle {
     pub fn get(&self) -> Option<std::sync::Arc<daemon_client::DaemonClient>> {
-        self.0.lock().ok().and_then(|g| g.clone())
+        self.client.lock().ok().and_then(|g| g.clone())
+    }
+
+    pub fn mark_shutting_down(&self) {
+        self.shutting_down.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_shutting_down(&self) -> bool {
+        self.shutting_down.load(Ordering::SeqCst)
     }
 }
 
@@ -83,6 +100,7 @@ pub fn run() {
             commands::quit_app,
             commands::open_devtools,
             commands::diag_log,
+            commands::ping_daemon,
         ])
         .setup(move |app| {
             let app_handle = app.handle().clone();
@@ -106,7 +124,7 @@ pub fn run() {
                         log::warn!("daemon: unavailable — using in-process PTYs");
                     }
                     let handle = app_for_daemon.state::<DaemonHandle>();
-                    let mut slot = handle.0.lock().expect("DaemonHandle poisoned");
+                    let mut slot = handle.client.lock().expect("DaemonHandle poisoned");
                     *slot = daemon_opt;
                 });
             }
@@ -140,6 +158,7 @@ pub fn run() {
                     "quit" => {
                         log::info!("Quit requested from tray menu");
                         let state: tauri::State<DaemonHandle> = app.state();
+                        state.mark_shutting_down();
                         if let Some(d) = state.get() {
                             // Non-blocking — do NOT wait on daemon shutdown,
                             // or a hung daemon delays tray response.

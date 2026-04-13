@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
 
 type State = "hidden" | "reconnecting" | "reconnected" | "dead";
@@ -45,8 +46,19 @@ export default function DaemonBanner() {
       }),
     ];
 
+    // Keepalive: ping every 60s so the daemon sees continuous client
+    // activity. Cheap — one JSON round-trip over a local named pipe.
+    const keepalive = window.setInterval(() => {
+      invoke("ping_daemon").catch((e) => {
+        // A failed ping just means the pipe is dead; the supervisor will
+        // surface it via daemon-reconnecting. Swallow so console isn't noisy.
+        void e;
+      });
+    }, 60_000);
+
     return () => {
       clearTimer();
+      window.clearInterval(keepalive);
       unlisteners.forEach((p) => p.then((fn) => fn()));
     };
   }, []);

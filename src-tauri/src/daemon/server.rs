@@ -20,7 +20,7 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -47,6 +47,12 @@ struct DaemonState {
     /// have at least one live session. Used by the idle watcher to exit the
     /// daemon after the configured idle timeout.
     zero_since: Arc<Mutex<Option<Instant>>>,
+    /// Number of currently-connected clients (the UI counts as one). The idle
+    /// watcher will NOT exit while this is > 0, even with zero sessions —
+    /// killing a daemon out from under a live UI is what caused the original
+    /// "keeps crashing" report (v0.4.11 post-mortem: graceful idle-exit
+    /// looked like a crash to the supervisor because the UI was still open).
+    active_clients: Arc<AtomicU32>,
 }
 
 impl DaemonState {
@@ -59,6 +65,7 @@ impl DaemonState {
             // Boot-time idle clock starts now — if nothing connects before
             // the timeout we exit cleanly instead of lingering forever.
             zero_since: Arc::new(Mutex::new(Some(Instant::now()))),
+            active_clients: Arc::new(AtomicU32::new(0)),
         }
     }
 
@@ -100,7 +107,7 @@ fn idle_timeout() -> Duration {
     let secs = std::env::var("WINMUX_DAEMON_IDLE_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(30 * 60); // 30 minutes
+        .unwrap_or(2 * 60 * 60); // 2 hours
     Duration::from_secs(secs)
 }
 
@@ -120,26 +127,40 @@ fn spawn_idle_watcher(state: Arc<DaemonState>) {
                 return;
             }
 
-            let (count, since) = {
+            let (count, since, clients) = {
                 let c = state.pty.lock().map(|m| m.session_count()).unwrap_or(0);
                 let s = state
                     .zero_since
                     .lock()
                     .map(|z| *z)
                     .unwrap_or(None);
-                (c, s)
+                let cl = state.active_clients.load(Ordering::SeqCst);
+                (c, s, cl)
             };
 
-            if count == 0 {
+            if count == 0 && clients == 0 {
                 if let Some(t) = since {
                     if t.elapsed() >= timeout {
                         log::info!(
-                            "daemon: idle for {}s with zero sessions — exiting",
+                            "daemon: idle for {}s with zero sessions, zero clients — exiting",
                             t.elapsed().as_secs()
                         );
                         state.shutdown.store(true, Ordering::SeqCst);
                         // Best-effort — close the listener loop's pipe wait by exiting the process.
                         std::process::exit(0);
+                    }
+                }
+            } else if count == 0 && clients > 0 {
+                // Session-idle but clients still attached — stay alive. Log
+                // once per hour so we can tell this branch is working in
+                // the wild.
+                if let Some(t) = since {
+                    if t.elapsed().as_secs() % 3600 < tick.as_secs() {
+                        log::info!(
+                            "daemon: idle for {}s but {} client(s) still connected — keeping alive",
+                            t.elapsed().as_secs(),
+                            clients
+                        );
                     }
                 }
             }
@@ -166,8 +187,14 @@ pub fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             wait_for_connection(handle)?;
 
             let state_clone = state.clone();
+            state_clone.active_clients.fetch_add(1, Ordering::SeqCst);
             std::thread::spawn(move || {
                 let client_id = state_clone.next_id();
+                log::info!(
+                    "daemon: client {} connected (total={})",
+                    client_id,
+                    state_clone.active_clients.load(Ordering::SeqCst)
+                );
                 if let Err(e) = handle_client(handle, client_id, state_clone.clone()) {
                     log::debug!("Client {} error: {}", client_id, e);
                 }
@@ -176,6 +203,22 @@ pub fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
                 if let Ok(mut subs) = state_clone.subs.lock() {
                     for senders in subs.values_mut() {
                         senders.retain(|s| s.client_id != client_id);
+                    }
+                }
+                let remaining = state_clone
+                    .active_clients
+                    .fetch_sub(1, Ordering::SeqCst)
+                    .saturating_sub(1);
+                log::info!(
+                    "daemon: client {} disconnected (remaining={})",
+                    client_id, remaining
+                );
+                // Reset the zero-since clock when the last client detaches so
+                // the idle countdown starts fresh from "now" rather than from
+                // the boot-time instant.
+                if remaining == 0 {
+                    if let Ok(mut z) = state_clone.zero_since.lock() {
+                        *z = Some(Instant::now());
                     }
                 }
             });

@@ -187,6 +187,16 @@ fn should_respawn() -> bool {
 /// respawn via `connect_or_spawn` (which internally retries pipe open for
 /// ~3s) and installs the new client into the managed `DaemonHandle`.
 fn supervise_reconnect(app: AppHandle) {
+    let state: tauri::State<crate::DaemonHandle> = app.state();
+
+    // If the app is shutting down, the pipe close is expected — don't
+    // respawn (it'd race the app.exit and potentially leak a daemon
+    // process) and don't count toward the crash cap.
+    if state.is_shutting_down() {
+        log::info!("daemon: pipe closed during app shutdown — skipping respawn");
+        return;
+    }
+
     if !should_respawn() {
         log::error!(
             "daemon: crash-loop detected (>{} crashes in {}s) — giving up",
@@ -204,8 +214,7 @@ fn supervise_reconnect(app: AppHandle) {
     match DaemonClient::connect_or_spawn(app.clone()) {
         Some(client) => {
             let arc = Arc::new(client);
-            let state: tauri::State<crate::DaemonHandle> = app.state();
-            if let Ok(mut slot) = state.0.lock() {
+            if let Ok(mut slot) = state.client.lock() {
                 *slot = Some(arc);
             }
             log::info!("daemon: supervisor reconnected successfully");
@@ -213,8 +222,7 @@ fn supervise_reconnect(app: AppHandle) {
         }
         None => {
             log::error!("daemon: supervisor respawn failed");
-            let state: tauri::State<crate::DaemonHandle> = app.state();
-            if let Ok(mut slot) = state.0.lock() {
+            if let Ok(mut slot) = state.client.lock() {
                 *slot = None;
             }
             let _ = app.emit("daemon-dead", ());

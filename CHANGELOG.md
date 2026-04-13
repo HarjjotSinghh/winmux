@@ -3,6 +3,18 @@
 All notable changes to WinMux are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.12] - 2026-04-14
+
+### Fixed — root cause of the "daemon keeps crashing" report
+- **The daemon wasn't crashing — it was idle-exiting under a live UI.** v0.4.11's `daemon.log` revealed `daemon: idle for 1800s with zero sessions — exiting`. The watchdog was session-based, so an open WinMux with no active shells (common case: user has the app open but no terminal running) tripped it every 30 min. The new supervisor faithfully respawned, sometimes hitting the 3-crash cap and surfacing "keeps crashing".
+- **Idle watcher is now connection-aware.** `DaemonState` tracks `active_clients: AtomicU32`; the watcher requires both `sessions == 0 AND clients == 0` before exiting. As long as the UI's named-pipe connection is alive, the daemon stays alive — exactly the behavior users expect. Per-connection accept/disconnect is logged so future post-mortems can see client count over time.
+- **Idle timeout default raised from 30 min → 2 h.** Still overridable via `WINMUX_DAEMON_IDLE_TIMEOUT_SECS`. With the connection guard in place, this only matters for the rare zombie-daemon case (UI crashed without sending shutdown).
+- **Supervisor respects shutting-down flag.** `DaemonHandle.shutting_down: AtomicBool` is set by `quit_app` and the tray Quit handler before issuing the daemon shutdown RPC. The supervisor checks this on pipe close — planned exits during teardown no longer trigger respawn races or count toward the crash cap.
+- **Zero-since clock resets on last-client-disconnect.** Previously, if the UI connected and then disconnected after the boot-time idle clock had been ticking, the daemon could exit immediately the moment all clients dropped. Now the idle countdown restarts from the disconnect instant.
+
+### Added (defence-in-depth)
+- **UI keepalive ping every 60 s.** `ping_daemon` Tauri command + `setInterval` in the daemon banner. Cheap (single JSON RPC over the local pipe) and surfaces half-open Windows pipes faster than waiting for the next user-driven RPC.
+
 ## [0.4.11] - 2026-04-13
 
 ### Fixed — daemon disconnects no longer require manual restart
