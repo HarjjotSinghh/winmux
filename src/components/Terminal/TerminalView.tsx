@@ -4,8 +4,10 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { SearchAddon } from "@xterm/addon-search";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import "@xterm/xterm/css/xterm.css";
+import { registerTerminal, unregisterTerminal } from "../../lib/terminalRegistry";
 import {
   createTerminal,
   writeTerminal,
@@ -154,6 +156,8 @@ export default function TerminalView({
 
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
+    const searchAddon = new SearchAddon();
+    term.loadAddon(searchAddon);
     term.loadAddon(
       new WebLinksAddon((_event, uri) => {
         openExternal(uri).catch((e) => console.error("open url failed:", e));
@@ -229,6 +233,7 @@ export default function TerminalView({
       const wireSession = (id: string) => {
         if (disposed) return;
         terminalIdRef.current = id;
+        registerTerminal(id, { term, search: searchAddon });
         onReadyRef.current(id);
         term.onData((data) => {
           writeTerminal(id, data).catch(console.error);
@@ -332,6 +337,7 @@ export default function TerminalView({
 
     return () => {
       disposed = true;
+      if (terminalIdRef.current) unregisterTerminal(terminalIdRef.current);
       observer.disconnect();
       term.dispose();
     };
