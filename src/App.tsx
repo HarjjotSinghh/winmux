@@ -16,6 +16,7 @@ import { findPaneInDirection } from "./lib/paneLayout";
 import type { PaneDirection } from "./lib/paneLayout";
 import { clampFontSize, DEFAULT_FONT_SIZE } from "./lib/font";
 import { useSettingsStore } from "./stores/settingsStore";
+import { useAgentStore } from "./stores/agentStore";
 import { closeTerminal, saveSession, loadSession, initNotifications, showSystemNotification, writeTerminal, getCwd, getTerminalShell, getScrollback, openDevtools, diagLog } from "./lib/ipc";
 import type { SessionData, PaneNode, PaneNodeData } from "./types";
 
@@ -53,6 +54,19 @@ export default function App() {
 
   const loadSettings = useSettingsStore((s) => s.load);
   const settings = useSettingsStore((s) => s.settings);
+  const agentUnread = useAgentStore((s) => s.unread);
+  const agentStatuses = useAgentStore((s) => s.statuses);
+
+  const terminalMeta = useMemo(() => {
+    const map: Record<string, { unread: number; status: string }> = {};
+    for (const [id, count] of Object.entries(agentUnread)) {
+      map[id] = { unread: count, status: agentStatuses[id] ?? "needs_input" };
+    }
+    for (const [id, status] of Object.entries(agentStatuses)) {
+      if (!map[id]) map[id] = { unread: 0, status };
+    }
+    return map;
+  }, [agentUnread, agentStatuses]);
 
   const [notifPanelVisible, setNotifPanelVisible] = useState(false);
   const [commandPaletteVisible, setCommandPaletteVisible] = useState(false);
@@ -255,7 +269,7 @@ export default function App() {
     return () => { unlistenPromise.then((fn) => fn()); };
   }, [workspaces, activeWorkspaceId]);
 
-  // Listen for OSC notifications
+  // Listen for OSC notifications — per-pane rings + agent status
   useEffect(() => {
     const unlisten = listen<{ terminal_id: string; title: string; body: string }>(
       "osc-notification",
@@ -270,14 +284,53 @@ export default function App() {
           const ids = getTerminalIds(w.paneTree);
           return ids.includes(event.payload.terminal_id);
         });
+        const agentStore = useAgentStore.getState();
+        const isFocused =
+          !!ws &&
+          ws.id === activeWorkspaceId &&
+          ws.activeTerminalId === event.payload.terminal_id;
+
+        // Workspace-level badge (existing behaviour)
         if (ws && ws.id !== activeWorkspaceId) {
           incrementUnread(ws.id);
+        }
+        // Per-pane agent store — increment only if not currently focused
+        if (!isFocused) {
+          agentStore.incrementForTerminal(
+            event.payload.terminal_id,
+            event.payload.title,
+            event.payload.body
+          );
+        } else {
+          // Still track that the agent was working, but don't mark unread
+          agentStore.setStatus(event.payload.terminal_id, "needs_input");
         }
       }
     );
 
     return () => { unlisten.then((fn) => fn()); };
   }, [workspaces, activeWorkspaceId, incrementUnread]);
+
+  // Clear per-pane notification when the user focuses that terminal
+  useEffect(() => {
+    const tid = activeWorkspace?.activeTerminalId;
+    if (!tid) return;
+    const agentStore = useAgentStore.getState();
+    if (agentStore.unread[tid]) {
+      agentStore.clearForTerminal(tid);
+    }
+    // Mark as idle once viewed (will be set to working/needs_input again on next OSC)
+    if (agentStore.statuses[tid] && agentStore.statuses[tid] !== "idle") {
+      // keep working indication briefly, then idle — just clear unread, keep status for ring until next event?
+      // For now, clear status to idle when focused
+      agentStore.setStatus(tid, "idle");
+    }
+    // Also clear workspace unread when jumping to it
+    if (activeWorkspace) {
+      // Use store directly to avoid stale closure on clearUnread
+      useWorkspaceStore.getState().clearUnread(activeWorkspace.id);
+    }
+  }, [activeWorkspace?.activeTerminalId, activeWorkspace?.id]);
 
   /** Best known working directory of a terminal (live when the shell reports
    *  OSC 7 / OSC 9;9, spawn dir otherwise). */
@@ -356,6 +409,31 @@ export default function App() {
     const activePane = findActivePaneNode(ws.paneTree, ws.activeTerminalId);
     if (activePane) store.toggleZoom(ws.id, activePane.id);
   }, []);
+
+  const handleJumpToTerminal = useCallback((terminalId: string) => {
+    const store = useWorkspaceStore.getState();
+    const ws = store.workspaces.find((w) => getTerminalIds(w.paneTree).includes(terminalId));
+    if (!ws) return;
+    store.setActiveWorkspace(ws.id);
+    store.setActiveTerminal(ws.id, terminalId);
+    useAgentStore.getState().clearForTerminal(terminalId);
+    store.clearUnread(ws.id);
+    setNotifPanelVisible(false);
+  }, []);
+
+  const handleNextNotification = useCallback(() => {
+    const agentStore = useAgentStore.getState();
+    const current = activeWorkspace?.activeTerminalId ?? null;
+    const nextId = agentStore.nextUnread(current);
+    if (nextId) handleJumpToTerminal(nextId);
+  }, [activeWorkspace?.activeTerminalId]);
+
+  const handlePrevNotification = useCallback(() => {
+    const agentStore = useAgentStore.getState();
+    const current = activeWorkspace?.activeTerminalId ?? null;
+    const prevId = agentStore.prevUnread(current);
+    if (prevId) handleJumpToTerminal(prevId);
+  }, [activeWorkspace?.activeTerminalId]);
 
   /** Terminal font zoom (Ctrl+= / Ctrl+- / Ctrl+0), persisted to settings. */
   const zoomFont = useCallback((delta: number) => {
@@ -462,10 +540,13 @@ export default function App() {
       } else if (e.ctrlKey && !e.shiftKey && e.key === "0") {
         e.preventDefault();
         resetFont();
-      } else if (e.ctrlKey && !e.shiftKey && e.key === "b") {
+      } else if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "n") {
         e.preventDefault();
-        toggleSidebar();
-      } else if (e.ctrlKey && e.shiftKey && e.key === "P") {
+        handleNextNotification();
+      } else if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "b") {
+        e.preventDefault();
+        handlePrevNotification();
+      } else if (e.ctrlKey && !e.shiftKey && e.key === "b") {
         e.preventDefault();
         setCommandPaletteVisible((v) => !v);
       } else if (e.ctrlKey && e.shiftKey && e.key === "I") {
@@ -488,7 +569,7 @@ export default function App() {
 
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [workspaces, setActiveWorkspace, toggleSidebar, handleSplit, handleCloseActivePane, handleOpenBrowser, handleToggleZoom, zoomFont, resetFont]);
+  }, [workspaces, setActiveWorkspace, toggleSidebar, handleSplit, handleCloseActivePane, handleOpenBrowser, handleToggleZoom, zoomFont, resetFont, handleNextNotification, handlePrevNotification]);
 
   const commands = useMemo(
     () => [
@@ -506,6 +587,8 @@ export default function App() {
       { id: "toggleSidebar", label: "Toggle Sidebar", shortcut: "Ctrl+B", action: toggleSidebar },
       { id: "notifications", label: "Toggle Notifications", shortcut: "Ctrl+Shift+I", action: () => setNotifPanelVisible((v) => !v) },
       { id: "findInTerminal", label: "Find in Terminal", shortcut: "Ctrl+Shift+F", action: () => setSearchVisible((v) => !v) },
+      { id: "nextNotification", label: "Next Notification", shortcut: "Ctrl+Shift+N", action: handleNextNotification },
+      { id: "prevNotification", label: "Previous Notification", shortcut: "Ctrl+Shift+B", action: handlePrevNotification },
       { id: "openBrowser", label: "Open Browser in Split", shortcut: "Ctrl+Shift+L", action: handleOpenBrowser },
       { id: "testNotification", label: "Send Test Notification", action: () => showSystemNotification("WinMux", "Notifications are working!") },
       ...workspaces.map((w, i) => ({
@@ -515,7 +598,7 @@ export default function App() {
         action: () => setActiveWorkspace(w.id),
       })),
     ],
-    [workspaces, handleSplit, handleFocusDirection, handleToggleZoom, zoomFont, resetFont, toggleSidebar, setActiveWorkspace]
+    [workspaces, handleSplit, handleFocusDirection, handleToggleZoom, zoomFont, resetFont, toggleSidebar, setActiveWorkspace, handleNextNotification, handlePrevNotification]
   );
 
   return (
@@ -572,6 +655,7 @@ export default function App() {
                     : undefined
                 }
                 zoomedPaneId={ws.zoomedPaneId ?? null}
+                terminalMeta={terminalMeta}
               />
             </div>
           ))}
@@ -586,6 +670,7 @@ export default function App() {
         <NotificationPanel
           visible={notifPanelVisible}
           onClose={() => setNotifPanelVisible(false)}
+          onJump={handleJumpToTerminal}
         />
       </div>
 

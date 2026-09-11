@@ -16,6 +16,8 @@ interface SplitContainerProps {
   onRatioChange?: (splitId: string, ratio: number) => void;
   /** Pane shown full-bleed on top; the rest stay mounted underneath. */
   zoomedPaneId?: string | null;
+  /** Per-terminal agent metadata for rings/badges (key = terminalId). */
+  terminalMeta?: Record<string, { unread: number; status: string }>;
 }
 
 /**
@@ -39,6 +41,7 @@ export default function SplitContainer({
   onClosePane,
   onRatioChange,
   zoomedPaneId,
+  terminalMeta,
 }: SplitContainerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const { leaves, splits } = useMemo(() => computeLayout(node), [node]);
@@ -65,6 +68,12 @@ export default function SplitContainer({
       {leaves.map(({ node: leaf, rect: layoutRect }) => {
         const isZoomed = leaf.id === zoomedLeafId;
         const rect = isZoomed ? { x: 0, y: 0, w: 1, h: 1 } : layoutRect;
+        const meta =
+          leaf.type === "terminal" && leaf.terminalId
+            ? terminalMeta?.[leaf.terminalId]
+            : undefined;
+        const hasNotification = (meta?.unread ?? 0) > 0;
+        const agentStatus = meta?.status;
         return (
         <div
           key={leaf.id}
@@ -88,6 +97,9 @@ export default function SplitContainer({
               leaf.terminalId !== "" &&
               leaf.terminalId === activeTerminalId
             }
+            hasNotification={hasNotification}
+            notificationCount={meta?.unread}
+            agentStatus={agentStatus}
           >
             {leaf.type === "terminal" ? (
               <TerminalView
@@ -209,15 +221,33 @@ function PaneFrame({
   onSplit,
   onClose,
   focused,
+  hasNotification,
+  notificationCount,
+  agentStatus,
   children,
 }: {
   paneId: string;
   onSplit?: (paneId: string, direction: "horizontal" | "vertical") => void;
   onClose?: (paneId: string) => void;
   focused?: boolean;
+  hasNotification?: boolean;
+  notificationCount?: number;
+  agentStatus?: string;
   children: React.ReactNode;
 }) {
   const [hovered, setHovered] = useState(false);
+
+  const shadows: string[] = [];
+  if (focused) shadows.push("inset 0 0 0 1px rgba(59, 130, 246, 0.6)");
+  if (hasNotification) {
+    const color =
+      agentStatus === "needs_input"
+        ? "rgba(251, 191, 36, 0.9)"
+        : agentStatus === "working"
+          ? "rgba(59, 130, 246, 0.9)"
+          : "rgba(59, 130, 246, 0.9)";
+    shadows.push(`inset 0 0 0 2px ${color}`);
+  }
 
   return (
     <div
@@ -227,11 +257,47 @@ function PaneFrame({
         position: "relative",
         width: "100%",
         height: "100%",
-        // Inset ring marks the keyboard-focused pane (Alt+Arrow target).
-        boxShadow: focused ? "inset 0 0 0 1px rgba(59, 130, 246, 0.6)" : undefined,
+        boxShadow: shadows.length ? shadows.join(", ") : undefined,
         transition: "box-shadow 120ms ease",
       }}
     >
+      {hasNotification && (
+        <div
+          style={{
+            position: "absolute",
+            top: 6,
+            left: 6,
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+            padding: notificationCount && notificationCount > 1 ? "2px 6px" : "4px",
+            background:
+              agentStatus === "needs_input"
+                ? "rgba(251, 191, 36, 0.95)"
+                : "rgba(59, 130, 246, 0.95)",
+            borderRadius: 10,
+            zIndex: 9,
+            boxShadow: "0 1px 6px rgba(0,0,0,0.4)",
+            pointerEvents: "none",
+          }}
+        >
+          <span
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: "50%",
+              background: "#fff",
+              display: "inline-block",
+              flexShrink: 0,
+            }}
+          />
+          {notificationCount && notificationCount > 1 && (
+            <span style={{ fontSize: 10, fontWeight: 700, color: "#fff", lineHeight: 1 }}>
+              {notificationCount}
+            </span>
+          )}
+        </div>
+      )}
       {children}
       {hovered && (onSplit || onClose) && (
         <div
