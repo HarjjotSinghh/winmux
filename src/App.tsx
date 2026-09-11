@@ -11,6 +11,8 @@ import UpdateBanner from "./components/Updater/UpdateBanner";
 import DaemonBanner from "./components/Daemon/DaemonBanner";
 import type { LayoutPreset } from "./components/Sidebar/WorkspacePresets";
 import { useWorkspaceStore, getTerminalIds, getFirstTerminalId } from "./stores/workspaceStore";
+import { findPaneInDirection } from "./lib/paneLayout";
+import type { PaneDirection } from "./lib/paneLayout";
 import { useSettingsStore } from "./stores/settingsStore";
 import { closeTerminal, saveSession, loadSession, initNotifications, showSystemNotification, writeTerminal, getCwd, getTerminalShell, getScrollback, openDevtools, diagLog } from "./lib/ipc";
 import type { SessionData, PaneNode, PaneNodeData } from "./types";
@@ -324,6 +326,45 @@ export default function App() {
     if (activePane) handlePaneClose(activePane.id);
   }, [activeWorkspace, handlePaneClose]);
 
+  /**
+   * Move keyboard focus to the nearest pane in a direction (Alt+Arrow).
+   * Geometry-based, so it always matches the visible layout.
+   */
+  const handleFocusDirection = useCallback((direction: PaneDirection) => {
+    const store = useWorkspaceStore.getState();
+    const ws = store.workspaces.find((w) => w.id === store.activeWorkspaceId);
+    if (!ws) return;
+
+    const activePane = findActivePaneNode(ws.paneTree, ws.activeTerminalId);
+    if (!activePane) return;
+
+    const target = findPaneInDirection(ws.paneTree, activePane.id, direction);
+    if (target && target.type === "terminal" && target.terminalId) {
+      store.setActiveTerminal(ws.id, target.terminalId);
+    }
+  }, []);
+
+  // Alt+Arrow pane navigation. Registered in the capture phase so xterm never
+  // forwards the chord to the shell.
+  useEffect(() => {
+    const directions: Record<string, PaneDirection> = {
+      ArrowLeft: "left",
+      ArrowRight: "right",
+      ArrowUp: "up",
+      ArrowDown: "down",
+    };
+    const handler = (e: KeyboardEvent) => {
+      if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+      const direction = directions[e.key];
+      if (!direction) return;
+      e.preventDefault();
+      e.stopPropagation();
+      handleFocusDirection(direction);
+    };
+    window.addEventListener("keydown", handler, { capture: true });
+    return () => window.removeEventListener("keydown", handler, { capture: true });
+  }, [handleFocusDirection]);
+
   const handleOpenBrowser = useCallback(() => {
     if (!activeWorkspace) return;
     const activePane = findActivePaneNode(
@@ -396,6 +437,10 @@ export default function App() {
       { id: "newWorkspace", label: "New Workspace...", shortcut: "Ctrl+Shift+T", action: () => setPresetPickerVisible(true) },
       { id: "splitRight", label: "Split Right", shortcut: "Ctrl+Shift+D", action: () => handleSplit("horizontal") },
       { id: "splitDown", label: "Split Down", shortcut: "Ctrl+Shift+E", action: () => handleSplit("vertical") },
+      { id: "focusLeft", label: "Focus Pane Left", shortcut: "Alt+Left", action: () => handleFocusDirection("left") },
+      { id: "focusRight", label: "Focus Pane Right", shortcut: "Alt+Right", action: () => handleFocusDirection("right") },
+      { id: "focusUp", label: "Focus Pane Up", shortcut: "Alt+Up", action: () => handleFocusDirection("up") },
+      { id: "focusDown", label: "Focus Pane Down", shortcut: "Alt+Down", action: () => handleFocusDirection("down") },
       { id: "toggleSidebar", label: "Toggle Sidebar", shortcut: "Ctrl+B", action: toggleSidebar },
       { id: "notifications", label: "Toggle Notifications", shortcut: "Ctrl+Shift+I", action: () => setNotifPanelVisible((v) => !v) },
       { id: "openBrowser", label: "Open Browser in Split", shortcut: "Ctrl+Shift+L", action: handleOpenBrowser },
@@ -407,7 +452,7 @@ export default function App() {
         action: () => setActiveWorkspace(w.id),
       })),
     ],
-    [workspaces, handleSplit, toggleSidebar, setActiveWorkspace]
+    [workspaces, handleSplit, handleFocusDirection, toggleSidebar, setActiveWorkspace]
   );
 
   return (

@@ -40,6 +40,10 @@ export default function SplitContainer({
   const containerRef = useRef<HTMLDivElement>(null);
   const { leaves, splits } = useMemo(() => computeLayout(node), [node]);
 
+  // Show the active-pane ring only when there is more than one pane — a lone
+  // terminal shouldn't carry a permanent outline.
+  const showFocusRing = leaves.length > 1;
+
   return (
     <div
       ref={containerRef}
@@ -66,6 +70,12 @@ export default function SplitContainer({
             paneId={leaf.id}
             onSplit={onSplit}
             onClose={onClosePane}
+            focused={
+              showFocusRing &&
+              leaf.type === "terminal" &&
+              leaf.terminalId !== "" &&
+              leaf.terminalId === activeTerminalId
+            }
           >
             {leaf.type === "terminal" ? (
               <TerminalView
@@ -184,11 +194,13 @@ function PaneFrame({
   paneId,
   onSplit,
   onClose,
+  focused,
   children,
 }: {
   paneId: string;
   onSplit?: (paneId: string, direction: "horizontal" | "vertical") => void;
   onClose?: (paneId: string) => void;
+  focused?: boolean;
   children: React.ReactNode;
 }) {
   const [hovered, setHovered] = useState(false);
@@ -197,7 +209,14 @@ function PaneFrame({
     <div
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      style={{ position: "relative", width: "100%", height: "100%" }}
+      style={{
+        position: "relative",
+        width: "100%",
+        height: "100%",
+        // Inset ring marks the keyboard-focused pane (Alt+Arrow target).
+        boxShadow: focused ? "inset 0 0 0 1px rgba(59, 130, 246, 0.6)" : undefined,
+        transition: "box-shadow 120ms ease",
+      }}
     >
       {children}
       {hovered && (onSplit || onClose) && (
