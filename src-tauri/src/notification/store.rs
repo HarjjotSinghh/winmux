@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Notification {
     pub id: String,
     pub terminal_id: String,
@@ -77,5 +78,24 @@ impl NotificationStore {
     #[allow(dead_code)]
     pub fn clear_for_terminal(&mut self, terminal_id: &str) {
         self.notifications.retain(|n| n.terminal_id != terminal_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The frontend `Notification` model reads `terminalId`; the serialized
+    /// JSON must match so click-to-jump can resolve the pane.
+    #[test]
+    fn notification_serializes_camel_case() {
+        let mut store = NotificationStore::new();
+        let notif = store.add("term-1", "Claude Code", "Task finished", "cli");
+        let json = serde_json::to_value(&notif).expect("serializes");
+        assert_eq!(
+            json.get("terminalId").and_then(|v| v.as_str()),
+            Some("term-1")
+        );
+        assert!(json.get("terminal_id").is_none());
     }
 }

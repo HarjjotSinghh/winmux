@@ -207,22 +207,30 @@ export default function App() {
         ws.paneTree.type === "terminal" && ws.paneTree.id === paneId;
 
       if (isOnlyPane) {
+        const terminalIds = getTerminalIds(ws.paneTree);
+        const agentStore = useAgentStore.getState();
         if (opts.ptyAlreadyExited) {
           // Shell exited on its own. Close the workspace if there are others;
           // otherwise respawn a fresh shell so the app isn't stuck on a dead pane.
           if (store.workspaces.length > 1) {
             store.removeWorkspace(workspaceId);
+            terminalIds.forEach((id) => agentStore.clearForTerminal(id));
           } else {
+            terminalIds.forEach((id) => agentStore.clearForTerminal(id));
             store.resetPane(workspaceId, paneId);
           }
         } else if (store.workspaces.length > 1) {
           getTerminalIds(ws.paneTree).forEach((id) => closeTerminal(id).catch(() => {}));
           store.removeWorkspace(workspaceId);
+          terminalIds.forEach((id) => agentStore.clearForTerminal(id));
         }
         return;
       }
 
       const removedId = store.closePane(workspaceId, paneId);
+      if (removedId) {
+        useAgentStore.getState().clearForTerminal(removedId);
+      }
       if (removedId && !opts.ptyAlreadyExited) {
         closeTerminal(removedId).catch(() => {});
       }
@@ -385,8 +393,11 @@ export default function App() {
     const store = useWorkspaceStore.getState();
     const ws = store.workspaces.find((w) => w.id === workspaceId);
     if (!ws) return;
-    getTerminalIds(ws.paneTree).forEach((id) => closeTerminal(id).catch(() => {}));
+    const ids = getTerminalIds(ws.paneTree);
+    ids.forEach((id) => closeTerminal(id).catch(() => {}));
     store.removeWorkspace(workspaceId);
+    const agentStore = useAgentStore.getState();
+    ids.forEach((id) => agentStore.clearForTerminal(id));
   }, []);
 
   const handleCloseActivePane = useCallback(() => {
@@ -410,30 +421,41 @@ export default function App() {
     if (activePane) store.toggleZoom(ws.id, activePane.id);
   }, []);
 
-  const handleJumpToTerminal = useCallback((terminalId: string) => {
+  const handleJumpToTerminal = useCallback((terminalId: string): boolean => {
     const store = useWorkspaceStore.getState();
     const ws = store.workspaces.find((w) => getTerminalIds(w.paneTree).includes(terminalId));
-    if (!ws) return;
+    if (!ws) return false;
     store.setActiveWorkspace(ws.id);
     store.setActiveTerminal(ws.id, terminalId);
     useAgentStore.getState().clearForTerminal(terminalId);
     store.clearUnread(ws.id);
     setNotifPanelVisible(false);
+    return true;
   }, []);
 
   const handleNextNotification = useCallback(() => {
     const agentStore = useAgentStore.getState();
     const current = activeWorkspace?.activeTerminalId ?? null;
-    const nextId = agentStore.nextUnread(current);
-    if (nextId) handleJumpToTerminal(nextId);
-  }, [activeWorkspace?.activeTerminalId]);
+    // Evict any terminals that died since their notification arrived so the
+    // queue can never wedge on a stale head.
+    for (let i = 0; i < agentStore.queue.length + 1; i++) {
+      const nextId = agentStore.nextUnread(current);
+      if (!nextId) return;
+      if (handleJumpToTerminal(nextId)) return;
+      agentStore.clearForTerminal(nextId);
+    }
+  }, [activeWorkspace?.activeTerminalId, handleJumpToTerminal]);
 
   const handlePrevNotification = useCallback(() => {
     const agentStore = useAgentStore.getState();
     const current = activeWorkspace?.activeTerminalId ?? null;
-    const prevId = agentStore.prevUnread(current);
-    if (prevId) handleJumpToTerminal(prevId);
-  }, [activeWorkspace?.activeTerminalId]);
+    for (let i = 0; i < agentStore.queue.length + 1; i++) {
+      const prevId = agentStore.prevUnread(current);
+      if (!prevId) return;
+      if (handleJumpToTerminal(prevId)) return;
+      agentStore.clearForTerminal(prevId);
+    }
+  }, [activeWorkspace?.activeTerminalId, handleJumpToTerminal]);
 
   /** Terminal font zoom (Ctrl+= / Ctrl+- / Ctrl+0), persisted to settings. */
   const zoomFont = useCallback((delta: number) => {
@@ -548,6 +570,9 @@ export default function App() {
         handlePrevNotification();
       } else if (e.ctrlKey && !e.shiftKey && e.key === "b") {
         e.preventDefault();
+        toggleSidebar();
+      } else if (e.ctrlKey && e.shiftKey && e.key === "P") {
+        e.preventDefault();
         setCommandPaletteVisible((v) => !v);
       } else if (e.ctrlKey && e.shiftKey && e.key === "I") {
         e.preventDefault();
@@ -585,6 +610,7 @@ export default function App() {
       { id: "fontDecrease", label: "Decrease Terminal Font", shortcut: "Ctrl+-", action: () => zoomFont(-1) },
       { id: "fontReset", label: "Reset Terminal Font Size", shortcut: "Ctrl+0", action: resetFont },
       { id: "toggleSidebar", label: "Toggle Sidebar", shortcut: "Ctrl+B", action: toggleSidebar },
+      { id: "commandPalette", label: "Toggle Command Palette", shortcut: "Ctrl+Shift+P", action: () => setCommandPaletteVisible((v) => !v) },
       { id: "notifications", label: "Toggle Notifications", shortcut: "Ctrl+Shift+I", action: () => setNotifPanelVisible((v) => !v) },
       { id: "findInTerminal", label: "Find in Terminal", shortcut: "Ctrl+Shift+F", action: () => setSearchVisible((v) => !v) },
       { id: "nextNotification", label: "Next Notification", shortcut: "Ctrl+Shift+N", action: handleNextNotification },

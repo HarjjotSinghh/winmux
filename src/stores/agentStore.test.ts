@@ -48,4 +48,27 @@ describe("agentStore", () => {
     useAgentStore.getState().incrementForTerminal("t1", "Agent", "working on task");
     expect(useAgentStore.getState().statuses["t1"]).toBe("working");
   });
+
+  it("evicting a dead head unblocks cycling to live panes", () => {
+    const s = useAgentStore.getState();
+    s.incrementForTerminal("dead-1", "a", "b");
+    s.incrementForTerminal("live-2", "a", "b");
+    s.incrementForTerminal("dead-3", "a", "b");
+
+    // Simulate the App cycle loop: jump to head fails (terminal gone),
+    // evict it, then the next head must be the live one.
+    expect(useAgentStore.getState().nextUnread(null)).toBe("dead-1");
+    useAgentStore.getState().clearForTerminal("dead-1");
+    expect(useAgentStore.getState().nextUnread(null)).toBe("live-2");
+    expect(useAgentStore.getState().queue).toEqual(["live-2", "dead-3"]);
+  });
+
+  it("clearing every entry empties the cycler", () => {
+    const s = useAgentStore.getState();
+    s.incrementForTerminal("t1", "a", "b");
+    s.clearForTerminal("t1");
+    expect(s.nextUnread("t1")).toBeNull();
+    expect(s.prevUnread(null)).toBeNull();
+    expect(s.queue).toEqual([]);
+  });
 });
