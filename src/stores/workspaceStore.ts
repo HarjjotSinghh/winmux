@@ -28,7 +28,10 @@ interface WorkspaceStore {
   /** Move the active workspace forward/backward with wraparound (Ctrl+Tab). */
   cycleWorkspace: (direction: 1 | -1) => void;
   /** Deep-copy a workspace's layout with fresh panes (no live sessions). */
-  duplicateWorkspace: (id: string) => Workspace | null;
+  duplicateWorkspace: (
+    id: string,
+    cwdByTerminalId?: Map<string, string>
+  ) => Workspace | null;
   setActiveTerminal: (workspaceId: string, terminalId: string) => void;
   updatePaneTree: (workspaceId: string, tree: PaneNode) => void;
   splitPane: (
@@ -166,16 +169,20 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     });
   },
 
-  duplicateWorkspace: (id) => {
+  duplicateWorkspace: (id, cwdByTerminalId?) => {
     const ws = get().workspaces.find((w) => w.id === id);
     if (!ws) return null;
     const dupe: Workspace = {
       ...ws,
       id: genId(),
       name: `${ws.name} copy`,
-      paneTree: cloneTreeFresh(ws.paneTree),
+      paneTree: cloneTreeFresh(ws.paneTree, cwdByTerminalId),
       activeTerminalId: null,
       zoomedPaneId: null,
+      // Fresh shells: workspace-level live metadata must not carry over, or
+      // a browser-only duplicate would show the original's branch forever.
+      cwd: null,
+      gitBranch: null,
       unreadCount: 0,
     };
     set((state) => ({
@@ -344,15 +351,21 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
 /**
  * Deep-copy a pane tree for duplication: fresh pane ids (so React mounts new
  * terminals), empty terminalIds (fresh shells, spawned on mount), cwd kept
- * so the duplicate starts in the same directory.
+ * so the duplicate starts in the same directory. Live cwds resolved by the
+ * caller win over the stored spawn/restore cwd.
  */
-export function cloneTreeFresh(node: PaneNode): PaneNode {
+export function cloneTreeFresh(
+  node: PaneNode,
+  cwdByTerminalId?: Map<string, string>
+): PaneNode {
   if (node.type === "terminal") {
+    const live = node.terminalId ? cwdByTerminalId?.get(node.terminalId) : undefined;
+    const cwd = live || node.cwd || node.restore?.cwd;
     return {
       type: "terminal",
       id: genPaneId(),
       terminalId: "",
-      ...(node.cwd ? { cwd: node.cwd } : {}),
+      ...(cwd ? { cwd } : {}),
     };
   }
   if (node.type === "browser") {
@@ -363,8 +376,8 @@ export function cloneTreeFresh(node: PaneNode): PaneNode {
     id: genPaneId(),
     direction: node.direction,
     ratio: node.ratio,
-    first: cloneTreeFresh(node.first),
-    second: cloneTreeFresh(node.second),
+    first: cloneTreeFresh(node.first, cwdByTerminalId),
+    second: cloneTreeFresh(node.second, cwdByTerminalId),
   };
 }
 

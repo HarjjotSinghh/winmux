@@ -438,11 +438,27 @@ export default function App() {
   }, []);
 
   /** Duplicate a workspace's layout with fresh shells (palette + tab menu). */
-  const handleDuplicateWorkspace = useCallback((workspaceId?: string) => {
+  const handleDuplicateWorkspace = useCallback(async (workspaceId?: string) => {
     const store = useWorkspaceStore.getState();
     const id = workspaceId ?? store.activeWorkspaceId;
     if (!id) return;
-    store.duplicateWorkspace(id);
+    const ws = store.workspaces.find((w) => w.id === id);
+    if (!ws) return;
+    // Resolve each live terminal's *current* directory so duplicates start
+    // where the shells actually are, not where they spawned. Dead or
+    // unreachable terminals simply contribute nothing (stored cwd fallback).
+    const live = new Map<string, string>();
+    await Promise.all(
+      getTerminalIds(ws.paneTree).map(async (tid) => {
+        try {
+          const cwd = await getCwd(tid);
+          if (cwd) live.set(tid, cwd);
+        } catch {
+          // Session gone mid-duplicate — fall back to stored cwd.
+        }
+      })
+    );
+    store.duplicateWorkspace(id, live);
   }, []);
 
   /** Cycle workspaces forward/backward with wraparound (Ctrl+Tab). */
@@ -579,6 +595,15 @@ export default function App() {
         e.preventDefault();
         e.stopPropagation();
         handleFocusDirection(direction);
+        return;
+      }
+      if (e.ctrlKey && !e.altKey && !e.metaKey && e.key === "Tab") {
+        // Ctrl+Tab / Ctrl+Shift+Tab — cycle workspaces. Must be captured:
+        // xterm's textarea listener would otherwise forward the Tab to the
+        // PTY (triggering completion) before a bubble handler could stop it.
+        e.preventDefault();
+        e.stopPropagation();
+        handleCycleWorkspace(e.shiftKey ? -1 : 1);
         return;
       }
       if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey) {
@@ -726,15 +751,10 @@ export default function App() {
       } else if (e.ctrlKey && e.shiftKey && e.key === "L") {
         e.preventDefault();
         handleOpenBrowser();
-        // NOTE: Ctrl+Shift+G (broadcast) and Ctrl+Shift+U (worktree) are
-        // handled in the capture-phase listener above — by the time a bubble
-        // handler runs, xterm has already forwarded them to the shell.
-      } else if (e.ctrlKey && e.key === "Tab") {
-        // Ctrl+Tab / Ctrl+Shift+Tab — cycle workspaces (also in xterm's face,
-        // so stop it here first).
-        e.preventDefault();
-        e.stopPropagation();
-        handleCycleWorkspace(e.shiftKey ? -1 : 1);
+        // NOTE: Ctrl+Shift+G (broadcast), Ctrl+Shift+U (worktree), and
+        // Ctrl+Tab / Ctrl+Shift+Tab (workspace cycling) are handled in the
+        // capture-phase listener above — by the time a bubble handler runs,
+        // xterm has already forwarded them to the shell.
       } else if (e.ctrlKey && !e.shiftKey && e.key >= "1" && e.key <= "9") {
         const index = parseInt(e.key) - 1;
         if (index < workspaces.length) {

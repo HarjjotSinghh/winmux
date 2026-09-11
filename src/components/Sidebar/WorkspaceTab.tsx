@@ -84,30 +84,29 @@ export default function WorkspaceTab({
         position: "relative",
       }}
     >
-      {/* Icon or accent dot — click for the icon picker, dot opens colors */}
+      {/* Icon or accent dot. Both pickers render at the tab root so each is
+          reachable regardless of which trigger is shown. */}
       {workspace.icon ? (
-        <div
-          onClick={(e) => { e.stopPropagation(); setShowIcon(!showIcon); setShowColor(false); }}
+        <button
+          onClick={(e) => { e.stopPropagation(); setShowIcon((v) => !v); setShowColor(false); }}
           title="Change icon"
+          aria-label={`Change icon for ${workspace.name}`}
+          aria-haspopup="dialog"
+          aria-expanded={showIcon}
           style={{
+            background: "none",
+            border: "none",
+            padding: 0,
             fontSize: "15px",
             lineHeight: 1,
             flexShrink: 0,
             cursor: "pointer",
-            position: "relative",
             filter: isActive ? "none" : "grayscale(60%)",
             opacity: isActive ? 1 : 0.75,
           }}
         >
           {workspace.icon}
-          {showIcon && (
-            <IconPicker
-              currentIcon={workspace.icon}
-              onSelect={onIconChange}
-              onClose={() => setShowIcon(false)}
-            />
-          )}
-        </div>
+        </button>
       ) : (
         <div
           onClick={(e) => { e.stopPropagation(); setShowColor(!showColor); }}
@@ -121,15 +120,21 @@ export default function WorkspaceTab({
             transition: "background 150ms ease",
             position: "relative",
           }}
-        >
-          {showColor && (
-            <ColorPicker
-              currentColor={workspace.color}
-              onSelect={onColorChange}
-              onClose={() => setShowColor(false)}
-            />
-          )}
-        </div>
+        />
+      )}
+      {showIcon && (
+        <IconPicker
+          currentIcon={workspace.icon}
+          onSelect={onIconChange}
+          onClose={() => setShowIcon(false)}
+        />
+      )}
+      {showColor && (
+        <ColorPicker
+          currentColor={workspace.color}
+          onSelect={onColorChange}
+          onClose={() => setShowColor(false)}
+        />
       )}
 
       {/* Name */}
