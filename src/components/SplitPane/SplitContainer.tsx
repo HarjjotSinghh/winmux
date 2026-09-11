@@ -93,7 +93,7 @@ export default function SplitContainer({
               <TerminalView
                 onReady={(tid) => onTerminalReady(leaf.id, tid)}
                 shell={leaf.restore?.shell || shell}
-                cwd={leaf.restore?.cwd}
+                cwd={leaf.cwd ?? leaf.restore?.cwd}
                 restore={leaf.restore}
                 focused={leaf.terminalId === activeTerminalId}
                 onFocus={() => {

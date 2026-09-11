@@ -17,7 +17,9 @@ pub struct PtySession {
     pub cols: u16,
     #[allow(dead_code)]
     pub rows: u16,
-    pub cwd: PathBuf,
+    /// Live working directory. Updated from OSC 7 / OSC 9;9 when the shell
+    /// reports it, otherwise the spawn directory.
+    pub cwd: Arc<Mutex<PathBuf>>,
     pub shell: String,
     #[allow(dead_code)]
     pub title: String,
@@ -89,7 +91,7 @@ impl PtySession {
             child,
             cols,
             rows,
-            cwd: working_dir,
+            cwd: Arc::new(Mutex::new(working_dir)),
             shell: shell.to_string(),
             title: String::new(),
             scrollback: Arc::new(Mutex::new(VecDeque::with_capacity(SCROLLBACK_MAX_BYTES))),

@@ -3,6 +3,22 @@
 All notable changes to WinMux are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.18] - 2026-09-11
+
+### Added - splits inherit the working directory
+
+- **New panes open in the directory of the pane they were split from.**
+  `splitPane` carries the source terminal's live cwd through to the new pane.
+- **Live cwd tracking in the PTY reader.** Parses OSC 7 (`file://` URIs from
+  bash/zsh/fish/Git Bash/WSL) and OSC 9;9 (ConEmu/Windows Terminal style), so
+  `get_cwd` reports the shell's *current* directory instead of its spawn
+  directory. The state machine handles sequences split across reads; unrelated
+  OSC sequences (notifications, titles) are ignored.
+- Session save/restore now records the live cwd, which also benefits restored
+  panes.
+- Rust parser tests (BEL and ST forms, percent-decoding, split reads, noise)
+  plus 3 new store tests.
+
 ## [0.4.17] - 2026-09-11
 
 ### Added - terminal font zoom

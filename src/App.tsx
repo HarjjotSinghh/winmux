@@ -11,7 +11,7 @@ import WorkspacePresets from "./components/Sidebar/WorkspacePresets";
 import UpdateBanner from "./components/Updater/UpdateBanner";
 import DaemonBanner from "./components/Daemon/DaemonBanner";
 import type { LayoutPreset } from "./components/Sidebar/WorkspacePresets";
-import { useWorkspaceStore, getTerminalIds, getFirstTerminalId } from "./stores/workspaceStore";
+import { useWorkspaceStore, getTerminalIds, getFirstTerminalId, getPaneTerminalId } from "./stores/workspaceStore";
 import { findPaneInDirection } from "./lib/paneLayout";
 import type { PaneDirection } from "./lib/paneLayout";
 import { clampFontSize, DEFAULT_FONT_SIZE } from "./lib/font";
@@ -43,7 +43,6 @@ export default function App() {
     setActiveWorkspace,
     setActiveTerminal,
     updatePaneTree,
-    splitPane,
     setPaneRatio,
     toggleSidebar,
     incrementUnread,
@@ -280,26 +279,43 @@ export default function App() {
     return () => { unlisten.then((fn) => fn()); };
   }, [workspaces, activeWorkspaceId, incrementUnread]);
 
+  /** Best known working directory of a terminal (live when the shell reports
+   *  OSC 7 / OSC 9;9, spawn dir otherwise). */
+  const resolvePaneCwd = useCallback(async (terminalId: string | null) => {
+    if (!terminalId) return undefined;
+    try {
+      const cwd = await getCwd(terminalId);
+      return cwd || undefined;
+    } catch {
+      return undefined;
+    }
+  }, []);
+
   const handleSplit = useCallback(
-    (direction: "horizontal" | "vertical") => {
-      if (!activeWorkspace) return;
-      const activePane = findActivePaneNode(
-        activeWorkspace.paneTree,
-        activeWorkspace.activeTerminalId
+    async (direction: "horizontal" | "vertical") => {
+      const store = useWorkspaceStore.getState();
+      const ws = store.workspaces.find((w) => w.id === store.activeWorkspaceId);
+      if (!ws) return;
+      const activePane = findActivePaneNode(ws.paneTree, ws.activeTerminalId);
+      if (!activePane) return;
+      const cwd = await resolvePaneCwd(
+        activePane.type === "terminal" ? activePane.terminalId || null : null
       );
-      if (activePane) {
-        splitPane(activeWorkspace.id, activePane.id, direction, "");
-      }
+      // New splits start in the directory of the pane they came from.
+      store.splitPane(ws.id, activePane.id, direction, "", cwd);
     },
-    [activeWorkspace, splitPane]
+    [resolvePaneCwd]
   );
 
   const handlePaneSplit = useCallback(
-    (paneId: string, direction: "horizontal" | "vertical") => {
-      if (!activeWorkspace) return;
-      splitPane(activeWorkspace.id, paneId, direction, "");
+    async (paneId: string, direction: "horizontal" | "vertical") => {
+      const store = useWorkspaceStore.getState();
+      const ws = store.workspaces.find((w) => w.id === store.activeWorkspaceId);
+      if (!ws) return;
+      const cwd = await resolvePaneCwd(getPaneTerminalId(ws.paneTree, paneId));
+      store.splitPane(ws.id, paneId, direction, "", cwd);
     },
-    [activeWorkspace, splitPane]
+    [resolvePaneCwd]
   );
 
   const handlePaneClose = useCallback(

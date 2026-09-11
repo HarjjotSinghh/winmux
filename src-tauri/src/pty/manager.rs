@@ -1,7 +1,9 @@
+use super::cwd::{update_if_changed, CwdTracker};
 use super::session::{PtySession, ScrollbackBuf, SCROLLBACK_MAX_BYTES};
 use crate::notification::OscParser;
 use std::collections::HashMap;
 use std::io::Read;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
@@ -69,13 +71,14 @@ impl PtyManager {
 
         let (session, reader) = PtySession::spawn(shell, cwd, cols, rows, env_vars)?;
         let scrollback = session.scrollback.clone();
+        let cwd_state = session.cwd.clone();
         let callbacks_handle: SessionCallbacksHandle = Arc::new(Mutex::new(callbacks));
         self.sessions.insert(id.clone(), session);
         self.callbacks.insert(id.clone(), callbacks_handle.clone());
 
         // Spawn reader thread for this terminal
         std::thread::spawn(move || {
-            Self::read_loop(reader, callbacks_handle, scrollback);
+            Self::read_loop(reader, callbacks_handle, scrollback, cwd_state);
         });
 
         Ok(())
@@ -125,15 +128,23 @@ impl PtyManager {
         mut reader: Box<dyn Read + Send>,
         callbacks: SessionCallbacksHandle,
         scrollback: ScrollbackBuf,
+        cwd: Arc<Mutex<PathBuf>>,
     ) {
         let mut buf = vec![0u8; 8192];
         let mut osc_parser = OscParser::new();
+        let mut cwd_tracker = CwdTracker::new();
 
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
                     let data = &buf[..n];
+
+                    // Live working directory from OSC 7 / OSC 9;9 (shells that
+                    // emit shell-integration sequences).
+                    if let Some(next) = cwd_tracker.parse(data) {
+                        update_if_changed(&cwd, &next);
+                    }
 
                     // Append to scrollback ring buffer (trim front if over cap)
                     if let Ok(mut sb) = scrollback.lock() {
@@ -202,7 +213,8 @@ impl PtyManager {
             .sessions
             .get(id)
             .ok_or_else(|| format!("Terminal not found: {}", id))?;
-        Ok(session.cwd.to_string_lossy().to_string())
+        let cwd = session.cwd.lock().map_err(|e| e.to_string())?;
+        Ok(cwd.to_string_lossy().to_string())
     }
 
     pub fn get_scrollback(&self, id: &str) -> Result<Vec<u8>, String> {

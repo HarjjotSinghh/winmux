@@ -30,7 +30,8 @@ interface WorkspaceStore {
     workspaceId: string,
     paneId: string,
     direction: "horizontal" | "vertical",
-    newTerminalId: string
+    newTerminalId: string,
+    cwd?: string
   ) => void;
   openBrowserInSplit: (workspaceId: string, paneId: string, url: string) => void;
   closePane: (workspaceId: string, paneId: string) => string | null;
@@ -151,7 +152,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     }));
   },
 
-  splitPane: (workspaceId, paneId, direction, newTerminalId) => {
+  splitPane: (workspaceId, paneId, direction, newTerminalId, cwd) => {
     set((state) => ({
       workspaces: state.workspaces.map((w) => {
         if (w.id !== workspaceId) return w;
@@ -160,7 +161,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
           // Splitting a zoomed pane would hide the new pane behind the zoom
           // overlay, so leave zoom when a split happens.
           zoomedPaneId: null,
-          paneTree: splitNode(w.paneTree, paneId, direction, newTerminalId),
+          paneTree: splitNode(w.paneTree, paneId, direction, newTerminalId, cwd),
         };
       }),
     }));
@@ -287,7 +288,8 @@ function splitNode(
   node: PaneNode,
   targetId: string,
   direction: "horizontal" | "vertical",
-  newTerminalId: string
+  newTerminalId: string,
+  cwd?: string
 ): PaneNode {
   if (node.id === targetId && node.type === "terminal") {
     return {
@@ -300,6 +302,7 @@ function splitNode(
         type: "terminal",
         id: genPaneId(),
         terminalId: newTerminalId,
+        ...(cwd ? { cwd } : {}),
       },
     };
   }
@@ -307,12 +310,25 @@ function splitNode(
   if (node.type === "split") {
     return {
       ...node,
-      first: splitNode(node.first, targetId, direction, newTerminalId),
-      second: splitNode(node.second, targetId, direction, newTerminalId),
+      first: splitNode(node.first, targetId, direction, newTerminalId, cwd),
+      second: splitNode(node.second, targetId, direction, newTerminalId, cwd),
     };
   }
 
   return node;
+}
+
+/** Terminal id owned by a pane, if that pane currently has one. */
+export function getPaneTerminalId(node: PaneNode, paneId: string): string | null {
+  if (node.type === "terminal") {
+    return node.id === paneId && node.terminalId ? node.terminalId : null;
+  }
+  if (node.type === "split") {
+    return (
+      getPaneTerminalId(node.first, paneId) ?? getPaneTerminalId(node.second, paneId)
+    );
+  }
+  return null;
 }
 
 function removeNode(
