@@ -37,6 +37,8 @@ interface WorkspaceStore {
   setPaneRatio: (workspaceId: string, splitId: string, ratio: number) => void;
   /** Replace a pane with a brand new terminal pane (used when a shell exits). */
   resetPane: (workspaceId: string, paneId: string) => void;
+  /** Toggle full-bleed zoom for a pane (Ctrl+Shift+Z). */
+  toggleZoom: (workspaceId: string, paneId: string) => void;
   setSidebarWidth: (width: number) => void;
   toggleSidebar: () => void;
   setGitBranch: (workspaceId: string, branch: string | null) => void;
@@ -65,6 +67,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         terminalId: "",
       },
       activeTerminalId: null,
+      zoomedPaneId: null,
       gitBranch: null,
       cwd: null,
       unreadCount: 0,
@@ -87,6 +90,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
       color: getWorkspaceColor(index),
       paneTree: tree,
       activeTerminalId: null,
+      zoomedPaneId: null,
       gitBranch: null,
       cwd: null,
       unreadCount: 0,
@@ -153,6 +157,9 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         if (w.id !== workspaceId) return w;
         return {
           ...w,
+          // Splitting a zoomed pane would hide the new pane behind the zoom
+          // overlay, so leave zoom when a split happens.
+          zoomedPaneId: null,
           paneTree: splitNode(w.paneTree, paneId, direction, newTerminalId),
         };
       }),
@@ -165,6 +172,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         if (w.id !== workspaceId) return w;
         return {
           ...w,
+          zoomedPaneId: null,
           paneTree: splitNodeWithBrowser(w.paneTree, paneId, url),
         };
       }),
@@ -185,7 +193,13 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     if (result) {
       set((state) => ({
         workspaces: state.workspaces.map((w) =>
-          w.id === workspaceId ? { ...w, paneTree: result.tree } : w
+          w.id === workspaceId
+            ? {
+                ...w,
+                paneTree: result.tree,
+                zoomedPaneId: w.zoomedPaneId === paneId ? null : w.zoomedPaneId,
+              }
+            : w
         ),
       }));
       return result.removedTerminalId;
@@ -207,7 +221,26 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
       workspaces: state.workspaces.map((w) => {
         if (w.id !== workspaceId) return w;
         const tree = resetNode(w.paneTree, paneId);
-        return tree ? { ...w, paneTree: tree, activeTerminalId: null } : w;
+        return tree
+          ? {
+              ...w,
+              paneTree: tree,
+              activeTerminalId: null,
+              zoomedPaneId: w.zoomedPaneId === paneId ? null : w.zoomedPaneId,
+            }
+          : w;
+      }),
+    }));
+  },
+
+  toggleZoom: (workspaceId, paneId) => {
+    set((state) => ({
+      workspaces: state.workspaces.map((w) => {
+        if (w.id !== workspaceId) return w;
+        return {
+          ...w,
+          zoomedPaneId: w.zoomedPaneId === paneId ? null : paneId,
+        };
       }),
     }));
   },

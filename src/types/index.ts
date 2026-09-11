@@ -34,6 +34,8 @@ export interface Workspace {
   color: string;
   paneTree: PaneNode;
   activeTerminalId: string | null;
+  /** Pane rendered full-bleed on top of the workspace (Ctrl+Shift+Z). */
+  zoomedPaneId?: string | null;
   gitBranch: string | null;
   cwd: string | null;
   unreadCount: number;
