@@ -104,6 +104,7 @@ pub fn run() {
             commands::open_devtools,
             commands::diag_log,
             commands::ping_daemon,
+            commands::git_run,
         ])
         .setup(move |app| {
             let app_handle = app.handle().clone();

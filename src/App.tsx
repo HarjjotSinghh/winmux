@@ -8,17 +8,20 @@ import TerminalSearch from "./components/Terminal/TerminalSearch";
 import NotificationPanel from "./components/Notification/NotificationPanel";
 import CommandPalette from "./components/CommandPalette/CommandPalette";
 import WorkspacePresets from "./components/Sidebar/WorkspacePresets";
+import WorktreeDialog from "./components/Sidebar/WorktreeDialog";
 import UpdateBanner from "./components/Updater/UpdateBanner";
 import DaemonBanner from "./components/Daemon/DaemonBanner";
 import type { LayoutPreset } from "./components/Sidebar/WorkspacePresets";
+import { AGENT_PRESETS } from "./components/Sidebar/WorkspacePresets";
 import { useWorkspaceStore, getTerminalIds, getFirstTerminalId, getPaneTerminalId } from "./stores/workspaceStore";
-import { findPaneInDirection } from "./lib/paneLayout";
+import { computeLayout, findPaneInDirection } from "./lib/paneLayout";
 import type { PaneDirection } from "./lib/paneLayout";
 import { setBroadcastTargetsProvider } from "./lib/broadcast";
 import { clampFontSize, DEFAULT_FONT_SIZE } from "./lib/font";
 import { useSettingsStore } from "./stores/settingsStore";
 import { useAgentStore } from "./stores/agentStore";
-import { closeTerminal, saveSession, loadSession, initNotifications, showSystemNotification, writeTerminal, getCwd, getTerminalShell, getScrollback, openDevtools, diagLog } from "./lib/ipc";
+import { closeTerminal, saveSession, loadSession, initNotifications, showSystemNotification, writeTerminal, getCwd, getTerminalShell, getScrollback, openDevtools, diagLog, gitToplevel, gitWorktreeAdd } from "./lib/ipc";
+import { branchFromPath } from "./lib/worktree";
 import type { SessionData, PaneNode, PaneNodeData } from "./types";
 
 function quotePath(p: string): string {
@@ -543,11 +546,57 @@ export default function App() {
     }
   }, [activeWorkspace, openBrowserInSplit]);
 
+  // Startup commands queued per pane id; consumed once the terminal reports
+  // ready (agent presets). Pane ids are stable, so a ref is enough.
+  const pendingSpawnsRef = useRef(new Map<string, string>());
+
   const handleNewWorkspace = useCallback(
     (preset: LayoutPreset, name: string) => {
       const tree = preset.build();
+      if (preset.spawns && preset.spawns.length > 0) {
+        // Map spawns to terminal panes in layout (DFS) order.
+        const paneIds = computeLayout(tree)
+          .leaves.filter((l) => l.node.type === "terminal")
+          .map((l) => l.node.id);
+        paneIds.forEach((paneId, i) => {
+          const cmd = preset.spawns?.[i];
+          if (cmd) pendingSpawnsRef.current.set(paneId, cmd);
+        });
+      }
       createWorkspaceWithTree(name, tree);
       setPresetPickerVisible(false);
+    },
+    [createWorkspaceWithTree]
+  );
+
+  const [worktreeDialogVisible, setWorktreeDialogVisible] = useState(false);
+  const [worktreeDefaultRepo, setWorktreeDefaultRepo] = useState<string | null>(null);
+
+  const handleOpenWorktreeDialog = useCallback(async () => {
+    // Prefill the repo from the active terminal's cwd when it's inside git.
+    let repo: string | null = null;
+    try {
+      const store = useWorkspaceStore.getState();
+      const ws = store.workspaces.find((w) => w.id === store.activeWorkspaceId);
+      const tid = ws?.activeTerminalId ?? null;
+      if (tid) {
+        const cwd = await getCwd(tid).catch(() => "");
+        if (cwd) repo = await gitToplevel(cwd);
+      }
+    } catch {
+      repo = null;
+    }
+    setWorktreeDefaultRepo(repo);
+    setWorktreeDialogVisible(true);
+  }, []);
+
+  const handleCreateWorktree = useCallback(
+    async (repo: string, path: string, branch: string) => {
+      await gitWorktreeAdd(repo, path, branch);
+      const paneId = `pane-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const tree: PaneNode = { type: "terminal", id: paneId, terminalId: "", cwd: path };
+      createWorkspaceWithTree(branchFromPath(path), tree);
+      setWorktreeDialogVisible(false);
     },
     [createWorkspaceWithTree]
   );
@@ -611,6 +660,9 @@ export default function App() {
       } else if (e.ctrlKey && e.shiftKey && (e.key === "G" || e.key === "g")) {
         e.preventDefault();
         handleToggleBroadcast();
+      } else if (e.ctrlKey && e.shiftKey && (e.key === "U" || e.key === "u")) {
+        e.preventDefault();
+        handleOpenWorktreeDialog();
       } else if (e.ctrlKey && !e.shiftKey && e.key >= "1" && e.key <= "9") {
         const index = parseInt(e.key) - 1;
         if (index < workspaces.length) {
@@ -622,11 +674,16 @@ export default function App() {
 
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [workspaces, setActiveWorkspace, toggleSidebar, handleSplit, handleCloseActivePane, handleOpenBrowser, handleToggleZoom, zoomFont, resetFont, handleNextNotification, handlePrevNotification, handleToggleBroadcast]);
+  }, [workspaces, setActiveWorkspace, toggleSidebar, handleSplit, handleCloseActivePane, handleOpenBrowser, handleToggleZoom, zoomFont, resetFont, handleNextNotification, handlePrevNotification, handleToggleBroadcast, handleOpenWorktreeDialog]);
 
   const commands = useMemo(
     () => [
       { id: "newWorkspace", label: "New Workspace...", shortcut: "Ctrl+Shift+T", action: () => setPresetPickerVisible(true) },
+      ...AGENT_PRESETS.map((p) => ({
+        id: `agent-preset-${p.id}`,
+        label: `New ${p.name} workspace`,
+        action: () => handleNewWorkspace(p, p.name),
+      })),
       { id: "splitRight", label: "Split Right", shortcut: "Ctrl+Shift+D", action: () => handleSplit("horizontal") },
       { id: "splitDown", label: "Split Down", shortcut: "Ctrl+Shift+E", action: () => handleSplit("vertical") },
       { id: "focusLeft", label: "Focus Pane Left", shortcut: "Alt+Left", action: () => handleFocusDirection("left") },
@@ -645,6 +702,7 @@ export default function App() {
       { id: "prevNotification", label: "Previous Notification", shortcut: "Ctrl+Shift+B", action: handlePrevNotification },
       { id: "openBrowser", label: "Open Browser in Split", shortcut: "Ctrl+Shift+L", action: handleOpenBrowser },
       { id: "toggleBroadcast", label: "Toggle Broadcast Input", shortcut: "Ctrl+Shift+G", action: handleToggleBroadcast },
+      { id: "worktreeWorkspace", label: "New Workspace from Git Worktree…", shortcut: "Ctrl+Shift+U", action: () => { void handleOpenWorktreeDialog(); } },
       { id: "testNotification", label: "Send Test Notification", action: () => showSystemNotification("WinMux", "Notifications are working!") },
       ...workspaces.map((w, i) => ({
         id: `workspace-${w.id}`,
@@ -653,7 +711,7 @@ export default function App() {
         action: () => setActiveWorkspace(w.id),
       })),
     ],
-    [workspaces, handleSplit, handleFocusDirection, handleToggleZoom, zoomFont, resetFont, toggleSidebar, setActiveWorkspace, handleNextNotification, handlePrevNotification, handleToggleBroadcast]
+    [workspaces, handleSplit, handleFocusDirection, handleToggleZoom, zoomFont, resetFont, toggleSidebar, setActiveWorkspace, handleNextNotification, handlePrevNotification, handleToggleBroadcast, handleNewWorkspace]
   );
 
   return (
@@ -696,6 +754,16 @@ export default function App() {
                   const updated = setPaneTerminalId(ws.paneTree, paneId, terminalId);
                   updatePaneTree(ws.id, updated);
                   setActiveTerminal(ws.id, terminalId);
+                  // Agent preset: boot the queued command once the shell is up.
+                  // Small delay so the prompt is ready; PTY input would queue
+                  // anyway, this just avoids racing profile output.
+                  const spawn = pendingSpawnsRef.current.get(paneId);
+                  if (spawn) {
+                    pendingSpawnsRef.current.delete(paneId);
+                    setTimeout(() => {
+                      writeTerminal(terminalId, `${spawn}\r`).catch(console.error);
+                    }, 600);
+                  }
                 }}
                 onTerminalFocus={(terminalId) =>
                   setActiveTerminal(ws.id, terminalId)
@@ -775,6 +843,17 @@ export default function App() {
         visible={presetPickerVisible}
         onSelect={handleNewWorkspace}
         onClose={() => setPresetPickerVisible(false)}
+        onWorktree={() => {
+          setPresetPickerVisible(false);
+          void handleOpenWorktreeDialog();
+        }}
+      />
+
+      <WorktreeDialog
+        visible={worktreeDialogVisible}
+        defaultRepo={worktreeDefaultRepo}
+        onSubmit={handleCreateWorktree}
+        onClose={() => setWorktreeDialogVisible(false)}
       />
 
       <UpdateBanner />

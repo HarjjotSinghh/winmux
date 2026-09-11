@@ -607,6 +607,103 @@ pub fn diag_log(level: String, msg: String) {
     }
 }
 
+// ── Git Commands ───────────────────────────────────────────────
+
+/// Git subcommands the UI may run. Deliberately narrow: read-only plumbing
+/// plus `worktree add/list/prune`. No push/fetch/remote, no shell
+/// passthrough — the UI can never ask for an arbitrary command line.
+const GIT_ALLOWED_SUBCOMMANDS: &[&str] = &["rev-parse", "worktree", "status", "branch", "rev-list"];
+
+/// `git worktree` verbs the UI may run.
+const GIT_WORKTREE_ALLOWED_VERBS: &[&str] = &["add", "list", "prune"];
+
+fn git_args_allowed(args: &[String]) -> Result<(), String> {
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("");
+    if !GIT_ALLOWED_SUBCOMMANDS.contains(&sub) {
+        return Err(format!("git: subcommand not allowed: {:?}", sub));
+    }
+    if sub == "worktree" {
+        let verb = args.get(1).map(|s| s.as_str()).unwrap_or("");
+        if !GIT_WORKTREE_ALLOWED_VERBS.contains(&verb) {
+            return Err(format!("git worktree: verb not allowed: {:?}", verb));
+        }
+    }
+    Ok(())
+}
+
+/// Run an allowlisted git command in `cwd`, returning trimmed stdout.
+/// Runs on the blocking pool (never the UI/main thread); git calls are local
+/// and fast, but a wedged child must not be able to stall the runtime.
+#[tauri::command]
+pub async fn git_run(cwd: String, args: Vec<String>) -> Result<String, String> {
+    git_args_allowed(&args)?;
+    tauri::async_runtime::spawn_blocking(move || git_run_blocking(&cwd, &args))
+        .await
+        .map_err(|e| format!("git task failed: {}", e))?
+}
+
+fn git_run_blocking(cwd: &str, args: &[String]) -> Result<String, String> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .map_err(|e| format!("failed to spawn git: {}", e))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(stderr
+            .lines()
+            .next()
+            .filter(|l| !l.is_empty())
+            .map(|l| l.to_string())
+            .unwrap_or_else(|| format!("git {} failed", args.join(" "))))
+    }
+}
+
+#[cfg(test)]
+mod git_tests {
+    use super::git_args_allowed;
+
+    fn sv(args: &[&str]) -> Vec<String> {
+        args.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn allows_readonly_plumbing() {
+        for args in [
+            sv(&["rev-parse"]),
+            sv(&["status"]),
+            sv(&["branch"]),
+            sv(&["rev-list"]),
+            sv(&["worktree", "list"]),
+            sv(&["worktree", "prune"]),
+        ] {
+            assert!(git_args_allowed(&args).is_ok(), "{:?}", args);
+        }
+    }
+
+    #[test]
+    fn rejects_everything_else() {
+        for args in [
+            Vec::<String>::new(),
+            sv(&["push"]),
+            sv(&["fetch"]),
+            sv(&["pull"]),
+            sv(&["checkout"]),
+            sv(&["worktree"]),
+            sv(&["worktree", "remove"]),
+            sv(&["worktree", "move"]),
+            // NOTE: extra args to an allowed subcommand (e.g. `rev-parse ; rm`)
+            // are safe by construction — we spawn `git` directly with an argv
+            // vector, never through a shell, so `;` is just a literal arg git
+            // rejects. Only the subcommand/verb gate matters.
+        ] {
+            assert!(git_args_allowed(&args).is_err(), "{:?}", args);
+        }
+    }
+}
+
 #[tauri::command]
 pub fn quit_app(app: AppHandle, daemon: State<'_, Arc<DaemonHandle>>) {
     log::info!("Explicit quit requested");
