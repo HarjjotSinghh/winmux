@@ -4,6 +4,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import TitleBar from "./components/TitleBar/TitleBar";
 import Sidebar from "./components/Sidebar/Sidebar";
 import SplitContainer from "./components/SplitPane/SplitContainer";
+import TerminalSearch from "./components/Terminal/TerminalSearch";
 import NotificationPanel from "./components/Notification/NotificationPanel";
 import CommandPalette from "./components/CommandPalette/CommandPalette";
 import WorkspacePresets from "./components/Sidebar/WorkspacePresets";
@@ -56,6 +57,7 @@ export default function App() {
   const [notifPanelVisible, setNotifPanelVisible] = useState(false);
   const [commandPaletteVisible, setCommandPaletteVisible] = useState(false);
   const [presetPickerVisible, setPresetPickerVisible] = useState(false);
+  const [searchVisible, setSearchVisible] = useState(false);
   const sessionRestoredRef = useRef(false);
 
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId);
@@ -431,6 +433,9 @@ export default function App() {
       } else if (e.ctrlKey && e.shiftKey && e.key === "I") {
         e.preventDefault();
         setNotifPanelVisible((v) => !v);
+      } else if (e.ctrlKey && e.shiftKey && e.key === "F") {
+        e.preventDefault();
+        setSearchVisible((v) => !v);
       } else if (e.ctrlKey && e.shiftKey && e.key === "L") {
         e.preventDefault();
         handleOpenBrowser();
@@ -459,6 +464,7 @@ export default function App() {
       { id: "zoomPane", label: "Zoom Active Pane", shortcut: "Ctrl+Shift+Z", action: handleToggleZoom },
       { id: "toggleSidebar", label: "Toggle Sidebar", shortcut: "Ctrl+B", action: toggleSidebar },
       { id: "notifications", label: "Toggle Notifications", shortcut: "Ctrl+Shift+I", action: () => setNotifPanelVisible((v) => !v) },
+      { id: "findInTerminal", label: "Find in Terminal", shortcut: "Ctrl+Shift+F", action: () => setSearchVisible((v) => !v) },
       { id: "openBrowser", label: "Open Browser in Split", shortcut: "Ctrl+Shift+L", action: handleOpenBrowser },
       { id: "testNotification", label: "Send Test Notification", action: () => showSystemNotification("WinMux", "Notifications are working!") },
       ...workspaces.map((w, i) => ({
@@ -528,6 +534,12 @@ export default function App() {
               />
             </div>
           ))}
+
+          <TerminalSearch
+            visible={searchVisible}
+            terminalId={activeWorkspace?.activeTerminalId ?? null}
+            onClose={() => setSearchVisible(false)}
+          />
         </div>
 
         <NotificationPanel

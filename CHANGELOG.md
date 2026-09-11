@@ -3,6 +3,21 @@
 All notable changes to WinMux are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.16] - 2026-09-11
+
+### Added - scrollback search
+
+- **Ctrl+Shift+F opens find-in-scrollback** for the active terminal
+  (`@xterm/addon-search`). Typing searches incrementally; Enter / Shift+Enter
+  step through matches; a match-case toggle is included; Escape closes and
+  restores focus to the terminal.
+- **Terminal registry** (`src/lib/terminalRegistry.ts`) exposes each live
+  xterm by terminal id, so overlays can act on the focused terminal without
+  prop drilling. Registration happens when a session is wired and is removed
+  on unmount.
+- Command palette entry: Find in Terminal.
+- Registry unit tests; 23 frontend tests total.
+
 ## [0.4.15] - 2026-09-11
 
 ### Added - pane zoom
