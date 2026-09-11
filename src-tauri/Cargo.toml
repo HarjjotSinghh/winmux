@@ -60,3 +60,13 @@ windows-sys = { version = "0.59", features = [
 ] }
 clipboard-win = "5"
 image = { version = "0.25", default-features = false, features = ["png", "bmp"] }
+
+# Keep debug/test builds light enough for memory-constrained machines: the
+# huge transitive crates (windows, tauri, wry) dominate rustc's peak memory
+# and stack usage when they carry debug info. The app crate keeps its own
+# symbols for meaningful debuggability.
+[profile.dev.package."*"]
+debug = false
+
+[profile.test.package."*"]
+debug = false
