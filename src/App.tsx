@@ -14,6 +14,7 @@ import type { LayoutPreset } from "./components/Sidebar/WorkspacePresets";
 import { useWorkspaceStore, getTerminalIds, getFirstTerminalId } from "./stores/workspaceStore";
 import { findPaneInDirection } from "./lib/paneLayout";
 import type { PaneDirection } from "./lib/paneLayout";
+import { clampFontSize, DEFAULT_FONT_SIZE } from "./lib/font";
 import { useSettingsStore } from "./stores/settingsStore";
 import { closeTerminal, saveSession, loadSession, initNotifications, showSystemNotification, writeTerminal, getCwd, getTerminalShell, getScrollback, openDevtools, diagLog } from "./lib/ipc";
 import type { SessionData, PaneNode, PaneNodeData } from "./types";
@@ -340,6 +341,17 @@ export default function App() {
     if (activePane) store.toggleZoom(ws.id, activePane.id);
   }, []);
 
+  /** Terminal font zoom (Ctrl+= / Ctrl+- / Ctrl+0), persisted to settings. */
+  const zoomFont = useCallback((delta: number) => {
+    const store = useSettingsStore.getState();
+    const current = store.settings?.appearance.fontSize ?? DEFAULT_FONT_SIZE;
+    store.setFontSize(clampFontSize(current + delta));
+  }, []);
+
+  const resetFont = useCallback(() => {
+    useSettingsStore.getState().setFontSize(DEFAULT_FONT_SIZE);
+  }, []);
+
   /**
    * Move keyboard focus to the nearest pane in a direction (Alt+Arrow).
    * Geometry-based, so it always matches the visible layout.
@@ -424,6 +436,16 @@ export default function App() {
       } else if (e.ctrlKey && e.shiftKey && e.key === "Z") {
         e.preventDefault();
         handleToggleZoom();
+      } else if (e.ctrlKey && (e.key === "=" || e.key === "+")) {
+        // Ctrl+= or Ctrl+Shift+= (Ctrl++) — both zoom in.
+        e.preventDefault();
+        zoomFont(1);
+      } else if (e.ctrlKey && !e.shiftKey && e.key === "-") {
+        e.preventDefault();
+        zoomFont(-1);
+      } else if (e.ctrlKey && !e.shiftKey && e.key === "0") {
+        e.preventDefault();
+        resetFont();
       } else if (e.ctrlKey && !e.shiftKey && e.key === "b") {
         e.preventDefault();
         toggleSidebar();
@@ -450,7 +472,7 @@ export default function App() {
 
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [workspaces, setActiveWorkspace, toggleSidebar, handleSplit, handleCloseActivePane, handleOpenBrowser, handleToggleZoom]);
+  }, [workspaces, setActiveWorkspace, toggleSidebar, handleSplit, handleCloseActivePane, handleOpenBrowser, handleToggleZoom, zoomFont, resetFont]);
 
   const commands = useMemo(
     () => [
@@ -462,6 +484,9 @@ export default function App() {
       { id: "focusUp", label: "Focus Pane Up", shortcut: "Alt+Up", action: () => handleFocusDirection("up") },
       { id: "focusDown", label: "Focus Pane Down", shortcut: "Alt+Down", action: () => handleFocusDirection("down") },
       { id: "zoomPane", label: "Zoom Active Pane", shortcut: "Ctrl+Shift+Z", action: handleToggleZoom },
+      { id: "fontIncrease", label: "Increase Terminal Font", shortcut: "Ctrl+=", action: () => zoomFont(1) },
+      { id: "fontDecrease", label: "Decrease Terminal Font", shortcut: "Ctrl+-", action: () => zoomFont(-1) },
+      { id: "fontReset", label: "Reset Terminal Font Size", shortcut: "Ctrl+0", action: resetFont },
       { id: "toggleSidebar", label: "Toggle Sidebar", shortcut: "Ctrl+B", action: toggleSidebar },
       { id: "notifications", label: "Toggle Notifications", shortcut: "Ctrl+Shift+I", action: () => setNotifPanelVisible((v) => !v) },
       { id: "findInTerminal", label: "Find in Terminal", shortcut: "Ctrl+Shift+F", action: () => setSearchVisible((v) => !v) },
@@ -474,7 +499,7 @@ export default function App() {
         action: () => setActiveWorkspace(w.id),
       })),
     ],
-    [workspaces, handleSplit, handleFocusDirection, handleToggleZoom, toggleSidebar, setActiveWorkspace]
+    [workspaces, handleSplit, handleFocusDirection, handleToggleZoom, zoomFont, resetFont, toggleSidebar, setActiveWorkspace]
   );
 
   return (

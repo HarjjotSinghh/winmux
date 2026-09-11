@@ -18,6 +18,8 @@ import {
   attachTerminal,
 } from "../../lib/ipc";
 import { getXtermTheme } from "../../lib/theme";
+import { clampFontSize, DEFAULT_FONT_SIZE } from "../../lib/font";
+import { useSettingsStore } from "../../stores/settingsStore";
 import type { TerminalRestoreData } from "../../types";
 
 function quotePath(p: string): string {
@@ -120,6 +122,9 @@ export default function TerminalView({
   const fitAddonRef = useRef<FitAddon | null>(null);
   const terminalIdRef = useRef<string | null>(null);
 
+  const fontSize = useSettingsStore((s) => s.settings?.appearance.fontSize);
+  const initialFontSizeRef = useRef(fontSize ?? DEFAULT_FONT_SIZE);
+
   // Store callbacks in refs so the init effect never re-runs
   const onReadyRef = useRef(onReady);
   onReadyRef.current = onReady;
@@ -147,7 +152,7 @@ export default function TerminalView({
       cursorBlink: true,
       cursorStyle: "bar",
       fontFamily: "Cascadia Code, Consolas, Courier New, monospace",
-      fontSize: 14,
+      fontSize: initialFontSizeRef.current,
       lineHeight: 1.2,
       theme: getXtermTheme(),
       allowProposedApi: true,
@@ -343,6 +348,21 @@ export default function TerminalView({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Empty deps — mount once, never re-run
+
+  // Live font-size changes (Ctrl+= / Ctrl+- / Ctrl+0) refit the terminal
+  // without touching its session.
+  useEffect(() => {
+    const term = terminalRef.current;
+    if (!term || !fontSize) return;
+    term.options.fontSize = clampFontSize(fontSize);
+    requestAnimationFrame(() => {
+      try {
+        fitAddonRef.current?.fit();
+      } catch {
+        // Ignore fit errors during transient layout.
+      }
+    });
+  }, [fontSize]);
 
   // Focus management
   useEffect(() => {
