@@ -14,6 +14,7 @@ import type { LayoutPreset } from "./components/Sidebar/WorkspacePresets";
 import { useWorkspaceStore, getTerminalIds, getFirstTerminalId, getPaneTerminalId } from "./stores/workspaceStore";
 import { findPaneInDirection } from "./lib/paneLayout";
 import type { PaneDirection } from "./lib/paneLayout";
+import { setBroadcastTargetsProvider } from "./lib/broadcast";
 import { clampFontSize, DEFAULT_FONT_SIZE } from "./lib/font";
 import { useSettingsStore } from "./stores/settingsStore";
 import { useAgentStore } from "./stores/agentStore";
@@ -421,6 +422,30 @@ export default function App() {
     if (activePane) store.toggleZoom(ws.id, activePane.id);
   }, []);
 
+  /**
+   * Toggle broadcast input for the active workspace (Ctrl+Shift+G). When on,
+   * keystrokes typed into any pane are mirrored to every other pane in the
+   * workspace. Paste flows through xterm onData, so it broadcasts too.
+   */
+  const handleToggleBroadcast = useCallback(() => {
+    const store = useWorkspaceStore.getState();
+    const ws = store.workspaces.find((w) => w.id === store.activeWorkspaceId);
+    if (ws) store.toggleBroadcast(ws.id);
+  }, []);
+
+  // Register the broadcast fan-out resolver once. TerminalView reads it
+  // synchronously on every keystroke (its effect mounts once), so this must
+  // not depend on render state — it pulls fresh store state per keystroke.
+  useEffect(() => {
+    setBroadcastTargetsProvider((selfId) => {
+      const s = useWorkspaceStore.getState();
+      const ws = s.workspaces.find((w) => getTerminalIds(w.paneTree).includes(selfId));
+      if (!ws || !ws.broadcastInput) return [];
+      return getTerminalIds(ws.paneTree);
+    });
+    return () => setBroadcastTargetsProvider(null);
+  }, []);
+
   const handleJumpToTerminal = useCallback((terminalId: string): boolean => {
     const store = useWorkspaceStore.getState();
     const ws = store.workspaces.find((w) => getTerminalIds(w.paneTree).includes(terminalId));
@@ -583,6 +608,9 @@ export default function App() {
       } else if (e.ctrlKey && e.shiftKey && e.key === "L") {
         e.preventDefault();
         handleOpenBrowser();
+      } else if (e.ctrlKey && e.shiftKey && (e.key === "G" || e.key === "g")) {
+        e.preventDefault();
+        handleToggleBroadcast();
       } else if (e.ctrlKey && !e.shiftKey && e.key >= "1" && e.key <= "9") {
         const index = parseInt(e.key) - 1;
         if (index < workspaces.length) {
@@ -594,7 +622,7 @@ export default function App() {
 
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [workspaces, setActiveWorkspace, toggleSidebar, handleSplit, handleCloseActivePane, handleOpenBrowser, handleToggleZoom, zoomFont, resetFont, handleNextNotification, handlePrevNotification]);
+  }, [workspaces, setActiveWorkspace, toggleSidebar, handleSplit, handleCloseActivePane, handleOpenBrowser, handleToggleZoom, zoomFont, resetFont, handleNextNotification, handlePrevNotification, handleToggleBroadcast]);
 
   const commands = useMemo(
     () => [
@@ -616,6 +644,7 @@ export default function App() {
       { id: "nextNotification", label: "Next Notification", shortcut: "Ctrl+Shift+N", action: handleNextNotification },
       { id: "prevNotification", label: "Previous Notification", shortcut: "Ctrl+Shift+B", action: handlePrevNotification },
       { id: "openBrowser", label: "Open Browser in Split", shortcut: "Ctrl+Shift+L", action: handleOpenBrowser },
+      { id: "toggleBroadcast", label: "Toggle Broadcast Input", shortcut: "Ctrl+Shift+G", action: handleToggleBroadcast },
       { id: "testNotification", label: "Send Test Notification", action: () => showSystemNotification("WinMux", "Notifications are working!") },
       ...workspaces.map((w, i) => ({
         id: `workspace-${w.id}`,
@@ -624,7 +653,7 @@ export default function App() {
         action: () => setActiveWorkspace(w.id),
       })),
     ],
-    [workspaces, handleSplit, handleFocusDirection, handleToggleZoom, zoomFont, resetFont, toggleSidebar, setActiveWorkspace, handleNextNotification, handlePrevNotification]
+    [workspaces, handleSplit, handleFocusDirection, handleToggleZoom, zoomFont, resetFont, toggleSidebar, setActiveWorkspace, handleNextNotification, handlePrevNotification, handleToggleBroadcast]
   );
 
   return (
@@ -685,6 +714,42 @@ export default function App() {
               />
             </div>
           ))}
+
+          {activeWorkspace?.broadcastInput && (
+            <div
+              onClick={handleToggleBroadcast}
+              title="Broadcast input is ON — click to turn off (Ctrl+Shift+G)"
+              style={{
+                position: "absolute",
+                bottom: 10,
+                right: 12,
+                zIndex: 300,
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "4px 10px",
+                background: "rgba(239, 68, 68, 0.92)",
+                borderRadius: 10,
+                boxShadow: "0 1px 6px rgba(0,0,0,0.4)",
+                cursor: "pointer",
+                userSelect: "none",
+              }}
+            >
+              <span
+                style={{
+                  width: 7,
+                  height: 7,
+                  borderRadius: "50%",
+                  background: "#fff",
+                  display: "inline-block",
+                  flexShrink: 0,
+                }}
+              />
+              <span style={{ fontSize: 10, fontWeight: 700, color: "#fff", lineHeight: 1 }}>
+                BROADCAST · {getTerminalIds(activeWorkspace.paneTree).length} panes
+              </span>
+            </div>
+          )}
 
           <TerminalSearch
             visible={searchVisible}

@@ -40,6 +40,8 @@ interface WorkspaceStore {
   resetPane: (workspaceId: string, paneId: string) => void;
   /** Toggle full-bleed zoom for a pane (Ctrl+Shift+Z). */
   toggleZoom: (workspaceId: string, paneId: string) => void;
+  /** Toggle broadcast: keystrokes in any pane mirror to all panes (Ctrl+Shift+G). */
+  toggleBroadcast: (workspaceId: string) => void;
   setSidebarWidth: (width: number) => void;
   toggleSidebar: () => void;
   setGitBranch: (workspaceId: string, branch: string | null) => void;
@@ -69,6 +71,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
       },
       activeTerminalId: null,
       zoomedPaneId: null,
+      broadcastInput: false,
       gitBranch: null,
       cwd: null,
       unreadCount: 0,
@@ -92,6 +95,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
       paneTree: tree,
       activeTerminalId: null,
       zoomedPaneId: null,
+      broadcastInput: false,
       gitBranch: null,
       cwd: null,
       unreadCount: 0,
@@ -243,6 +247,14 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
           zoomedPaneId: w.zoomedPaneId === paneId ? null : paneId,
         };
       }),
+    }));
+  },
+
+  toggleBroadcast: (workspaceId) => {
+    set((state) => ({
+      workspaces: state.workspaces.map((w) =>
+        w.id === workspaceId ? { ...w, broadcastInput: !w.broadcastInput } : w
+      ),
     }));
   },
 

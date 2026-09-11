@@ -191,3 +191,33 @@ describe("workspaceStore split cwd inheritance", () => {
     expect(getPaneTerminalId(tree, "missing")).toBeNull();
   });
 });
+
+describe("workspaceStore broadcast", () => {
+  beforeEach(resetStore);
+
+  it("defaults off and toggles per workspace", () => {
+    const a = useWorkspaceStore.getState().createWorkspace("a");
+    const b = useWorkspaceStore.getState().createWorkspace("b");
+    expect(a.broadcastInput).toBe(false);
+
+    useWorkspaceStore.getState().toggleBroadcast(a.id);
+    const after = useWorkspaceStore.getState().workspaces;
+    expect(after.find((w) => w.id === a.id)?.broadcastInput).toBe(true);
+    expect(after.find((w) => w.id === b.id)?.broadcastInput).toBe(false);
+
+    useWorkspaceStore.getState().toggleBroadcast(a.id);
+    expect(
+      useWorkspaceStore.getState().workspaces.find((w) => w.id === a.id)?.broadcastInput
+    ).toBe(false);
+  });
+
+  it("survives splits (so broadcast keeps working while tiling)", () => {
+    const { workspaceId, paneId } = workspaceWithTerminal("term-1");
+    useWorkspaceStore.getState().toggleBroadcast(workspaceId);
+    useWorkspaceStore.getState().splitPane(workspaceId, paneId, "horizontal", "");
+    expect(
+      useWorkspaceStore.getState().workspaces.find((w) => w.id === workspaceId)
+        ?.broadcastInput
+    ).toBe(true);
+  });
+});

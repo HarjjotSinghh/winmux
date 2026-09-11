@@ -38,6 +38,8 @@ export interface Workspace {
   activeTerminalId: string | null;
   /** Pane rendered full-bleed on top of the workspace (Ctrl+Shift+Z). */
   zoomedPaneId?: string | null;
+  /** When true, keystrokes in any pane are also sent to every other pane. */
+  broadcastInput?: boolean;
   gitBranch: string | null;
   cwd: string | null;
   unreadCount: number;
