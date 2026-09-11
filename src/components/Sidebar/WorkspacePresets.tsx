@@ -5,6 +5,12 @@ export interface LayoutPreset {
   name: string;
   description: string;
   build: () => import("../../types").PaneNode;
+  /**
+   * Optional startup commands, one per terminal pane in layout (DFS) order.
+   * Panes without a matching entry start as plain shells. Used by agent
+   * presets to boot e.g. `claude` in every pane.
+   */
+  spawns?: string[];
 }
 
 function pid(): string {
@@ -24,13 +30,22 @@ export const PRESETS: LayoutPreset[] = [
   { id: "main-side", name: "Main + Side", description: "Large left, stacked right", build: () => s("horizontal", 0.6, t(), s("vertical", 0.5, t(), t())) },
 ];
 
+/** Agent presets: same layouts, but each pane boots an agent/command. */
+export const AGENT_PRESETS: LayoutPreset[] = [
+  { id: "agent-pair", name: "Claude pair", description: "Two agents side by side", build: () => s("horizontal", 0.5, t(), t()), spawns: ["claude", "claude"] },
+  { id: "agent-stack", name: "Agent + shell", description: "Agent over a plain shell", build: () => s("vertical", 0.5, t(), t()), spawns: ["claude"] },
+  { id: "agent-grid", name: "Agent grid", description: "Four agents, 2x2", build: () => s("vertical", 0.5, s("horizontal", 0.5, t(), t()), s("horizontal", 0.5, t(), t())), spawns: ["claude", "claude", "claude", "claude"] },
+  { id: "server-agent", name: "Server + agent", description: "Dev server next to an agent", build: () => s("horizontal", 0.5, t(), t()), spawns: ["npm run dev", "claude"] },
+];
+
 interface Props {
   visible: boolean;
   onSelect: (preset: LayoutPreset, name: string) => void;
   onClose: () => void;
+  onWorktree?: () => void;
 }
 
-export default function WorkspacePresets({ visible, onSelect, onClose }: Props) {
+export default function WorkspacePresets({ visible, onSelect, onClose, onWorktree }: Props) {
   const [name, setName] = useState("");
 
   // Fresh dialog each time; don't leak the previous workspace's name.
@@ -105,23 +120,20 @@ export default function WorkspacePresets({ visible, onSelect, onClose }: Props) 
           />
         </div>
 
-        <div style={{
-          padding: "8px 16px 16px",
-          display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "6px",
-        }}>
-          {PRESETS.map((p) => (
+        {onWorktree && (
+          <div style={{ padding: "0 16px 8px" }}>
             <button
-              key={p.id}
-              onClick={() => onSelect(p, name)}
+              onClick={onWorktree}
               style={{
-                padding: "14px 8px 10px",
+                width: "100%",
+                padding: "8px 10px",
                 background: "#0A0A0A",
-                border: "1px solid #1F1F1F",
+                border: "1px dashed #2A2A2A",
                 borderRadius: "8px",
                 cursor: "pointer",
-                display: "flex", flexDirection: "column",
-                alignItems: "center", gap: "8px",
-                color: "#737373",
+                color: "#A3A3A3",
+                fontSize: "12px",
+                fontFamily: "inherit",
                 transition: "all 150ms ease",
               }}
               onMouseEnter={(e) => {
@@ -129,18 +141,98 @@ export default function WorkspacePresets({ visible, onSelect, onClose }: Props) 
                 e.currentTarget.style.color = "#E5E5E5";
               }}
               onMouseLeave={(e) => {
-                e.currentTarget.style.borderColor = "#1F1F1F";
-                e.currentTarget.style.color = "#737373";
+                e.currentTarget.style.borderColor = "#2A2A2A";
+                e.currentTarget.style.color = "#A3A3A3";
               }}
             >
-              <LayoutIcon id={p.id} />
-              <span style={{ fontSize: "11px", fontWeight: 500 }}>{p.name}</span>
+              New workspace from git worktree… (Ctrl+Shift+U)
             </button>
-          ))}
-        </div>
+          </div>
+        )}
+
+        <PresetSection title="Layouts" presets={PRESETS} name={name} onSelect={onSelect} iconFor={(p) => p.id} />
+        <PresetSection title="Agents" presets={AGENT_PRESETS} name={name} onSelect={onSelect} iconFor={agentIconId} last />
       </div>
     </div>
   );
+}
+
+function PresetSection({
+  title,
+  presets,
+  name,
+  onSelect,
+  iconFor,
+  last,
+}: {
+  title: string;
+  presets: LayoutPreset[];
+  name: string;
+  onSelect: (preset: LayoutPreset, name: string) => void;
+  iconFor: (preset: LayoutPreset) => string;
+  last?: boolean;
+}) {
+  return (
+    <>
+      <div
+        style={{
+          padding: "8px 16px 0",
+          fontSize: "10px",
+          fontWeight: 600,
+          letterSpacing: "0.08em",
+          textTransform: "uppercase",
+          color: "#525252",
+        }}
+      >
+        {title}
+      </div>
+      <div style={{
+        padding: `8px 16px ${last ? "16px" : "4px"}`,
+        display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "6px",
+      }}>
+        {presets.map((p) => (
+          <button
+            key={p.id}
+            title={p.description + (p.spawns ? ` — boots: ${p.spawns.join(", ")}` : "")}
+            onClick={() => onSelect(p, name)}
+            style={{
+              padding: "14px 8px 10px",
+              background: "#0A0A0A",
+              border: "1px solid #1F1F1F",
+              borderRadius: "8px",
+              cursor: "pointer",
+              display: "flex", flexDirection: "column",
+              alignItems: "center", gap: "8px",
+              color: "#737373",
+              transition: "all 150ms ease",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.borderColor = "#3B82F6";
+              e.currentTarget.style.color = "#E5E5E5";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.borderColor = "#1F1F1F";
+              e.currentTarget.style.color = "#737373";
+            }}
+          >
+            <LayoutIcon id={iconFor(p)} />
+            <span style={{ fontSize: "11px", fontWeight: 500 }}>{p.name}</span>
+          </button>
+        ))}
+      </div>
+    </>
+  );
+}
+
+const AGENT_ICON: Record<string, string> = {
+  "agent-pair": "1x2",
+  "agent-stack": "2x1",
+  "agent-grid": "2x2",
+  "server-agent": "1x2",
+};
+
+function agentIconId(p: LayoutPreset): string {
+  return AGENT_ICON[p.id] ?? "single";
 }
 
 function LayoutIcon({ id }: { id: string }) {

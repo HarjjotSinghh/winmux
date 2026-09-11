@@ -8,6 +8,7 @@ import { SearchAddon } from "@xterm/addon-search";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import "@xterm/xterm/css/xterm.css";
 import { registerTerminal, unregisterTerminal } from "../../lib/terminalRegistry";
+import { getBroadcastTargets } from "../../lib/broadcast";
 import {
   createTerminal,
   writeTerminal,
@@ -242,6 +243,11 @@ export default function TerminalView({
         onReadyRef.current(id);
         term.onData((data) => {
           writeTerminal(id, data).catch(console.error);
+          // Broadcast mode: mirror the keystroke to every other pane in the
+          // workspace. Paste also flows through here (term.paste -> onData).
+          for (const tid of getBroadcastTargets(id)) {
+            writeTerminal(tid, data).catch(console.error);
+          }
         });
         term.onResize(({ cols, rows }) => {
           resizeTerminal(id, cols, rows).catch(console.error);

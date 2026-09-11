@@ -138,6 +138,39 @@ export async function loadSession(): Promise<SessionData | null> {
   return invoke<SessionData | null>("load_session");
 }
 
+// ── Git (allowlisted subcommands only, enforced in Rust) ──────────
+
+export async function gitRun(cwd: string, args: string[]): Promise<string> {
+  return invoke<string>("git_run", { cwd, args });
+}
+
+/** Repo toplevel for `cwd`, or null when it isn't inside a git repo. */
+export async function gitToplevel(cwd: string): Promise<string | null> {
+  try {
+    const out = await gitRun(cwd, ["rev-parse", "--show-toplevel"]);
+    return out || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `git worktree add [-b branch] -- path` inside `repo`. Returns git's stdout.
+ * The `--` keeps a user-typed location that begins with `-` from being parsed
+ * as a git flag (the Rust gate rejects such paths too — defense in depth).
+ */
+export async function gitWorktreeAdd(
+  repo: string,
+  path: string,
+  branch?: string
+): Promise<string> {
+  const args =
+    branch && branch.length > 0
+      ? ["worktree", "add", "-b", branch, "--", path]
+      : ["worktree", "add", "--", path];
+  return gitRun(repo, args);
+}
+
 // ── Clipboard ────────────────────────────────────────────────────
 
 export type ClipboardPaste =

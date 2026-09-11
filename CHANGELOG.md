@@ -3,6 +3,27 @@
 All notable changes to WinMux are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-09-11
+
+### Added — Orchestration (Pack 2/4)
+
+- **Broadcast input (Ctrl+Shift+G).** Per-workspace toggle that mirrors every
+  keystroke typed into any pane to all other panes in the same workspace, so
+  one prompt can drive N agents at once. Paste flows through xterm `onData`,
+  so it broadcasts too. A red pill in the terminal area shows the live pane
+  count; clicking it (or the palette entry) toggles off.
+- **New workspace from git worktree (Ctrl+Shift+U).** A dialog (repo
+  prefilled from the active terminal's git toplevel) runs `git worktree add
+  -b <branch>` via a new allowlisted `git_run` Tauri command, then opens a
+  workspace rooted at the new worktree. Branch names are validated, locations
+  auto-suggested as `<repo>/.worktrees/<slug>`, and git errors surface inline.
+- **Agent presets.** The workspace picker gains an Agents section (Claude
+  pair, Agent + shell, Agent grid, Server + agent); each terminal pane boots
+  its command ~600 ms after the shell reports ready. The same presets are in
+  the command palette as one-click "New … workspace" entries.
+- Tests: broadcast registry/store tests, worktree helper tests, `git_run`
+  allowlist tests; 52 frontend + 20 Rust tests green.
+
 ## [0.5.0] - 2026-09-11
 
 ### Added — Agent awareness (Pack 1/4)

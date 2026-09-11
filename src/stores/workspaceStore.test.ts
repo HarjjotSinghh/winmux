@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   useWorkspaceStore,
+  applyCwdToTree,
   getFirstTerminalId,
   getPaneTerminalId,
   getTerminalIds,
@@ -189,5 +190,72 @@ describe("workspaceStore split cwd inheritance", () => {
     expect(getPaneTerminalId(tree, paneId)).toBe("term-1");
     expect(getPaneTerminalId(tree, tree.second.id)).toBeNull();
     expect(getPaneTerminalId(tree, "missing")).toBeNull();
+  });
+});
+
+describe("workspaceStore broadcast", () => {
+  beforeEach(resetStore);
+
+  it("defaults off and toggles per workspace", () => {
+    const a = useWorkspaceStore.getState().createWorkspace("a");
+    const b = useWorkspaceStore.getState().createWorkspace("b");
+    expect(a.broadcastInput).toBe(false);
+
+    useWorkspaceStore.getState().toggleBroadcast(a.id);
+    const after = useWorkspaceStore.getState().workspaces;
+    expect(after.find((w) => w.id === a.id)?.broadcastInput).toBe(true);
+    expect(after.find((w) => w.id === b.id)?.broadcastInput).toBe(false);
+
+    useWorkspaceStore.getState().toggleBroadcast(a.id);
+    expect(
+      useWorkspaceStore.getState().workspaces.find((w) => w.id === a.id)?.broadcastInput
+    ).toBe(false);
+  });
+
+  it("survives splits (so broadcast keeps working while tiling)", () => {
+    const { workspaceId, paneId } = workspaceWithTerminal("term-1");
+    useWorkspaceStore.getState().toggleBroadcast(workspaceId);
+    useWorkspaceStore.getState().splitPane(workspaceId, paneId, "horizontal", "");
+    expect(
+      useWorkspaceStore.getState().workspaces.find((w) => w.id === workspaceId)
+        ?.broadcastInput
+    ).toBe(true);
+  });
+});
+
+describe("applyCwdToTree", () => {
+  beforeEach(resetStore);
+
+  it("fills terminal panes lacking cwd and leaves the rest alone", () => {
+    const tree: PaneNode = {
+      type: "split",
+      id: "s",
+      direction: "horizontal",
+      ratio: 0.5,
+      first: { type: "terminal", id: "a", terminalId: "t1" },
+      second: {
+        type: "split",
+        id: "s2",
+        direction: "vertical",
+        ratio: 0.5,
+        first: { type: "terminal", id: "b", terminalId: "", cwd: "C:\\keep" },
+        second: { type: "browser", id: "c", url: "https://example.com" },
+      },
+    };
+    const out = applyCwdToTree(tree, "C:\\proj");
+    if (out.type !== "split") throw new Error("expected split");
+    if (out.first.type !== "terminal") throw new Error("expected terminal");
+    if (out.second.type !== "split") throw new Error("expected split");
+    if (out.second.first.type !== "terminal") throw new Error("expected terminal");
+
+    expect(out.first.cwd).toBe("C:\\proj");
+    // Explicit cwd wins over the inherited one.
+    expect(out.second.first.cwd).toBe("C:\\keep");
+    // Browser panes untouched.
+    expect(out.second.second).toEqual({
+      type: "browser",
+      id: "c",
+      url: "https://example.com",
+    });
   });
 });

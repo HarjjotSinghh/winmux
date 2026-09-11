@@ -8,16 +8,20 @@ import TerminalSearch from "./components/Terminal/TerminalSearch";
 import NotificationPanel from "./components/Notification/NotificationPanel";
 import CommandPalette from "./components/CommandPalette/CommandPalette";
 import WorkspacePresets from "./components/Sidebar/WorkspacePresets";
+import WorktreeDialog from "./components/Sidebar/WorktreeDialog";
 import UpdateBanner from "./components/Updater/UpdateBanner";
 import DaemonBanner from "./components/Daemon/DaemonBanner";
 import type { LayoutPreset } from "./components/Sidebar/WorkspacePresets";
-import { useWorkspaceStore, getTerminalIds, getFirstTerminalId, getPaneTerminalId } from "./stores/workspaceStore";
-import { findPaneInDirection } from "./lib/paneLayout";
+import { AGENT_PRESETS } from "./components/Sidebar/WorkspacePresets";
+import { useWorkspaceStore, applyCwdToTree, getTerminalIds, getFirstTerminalId, getPaneTerminalId } from "./stores/workspaceStore";
+import { computeLayout, findPaneInDirection } from "./lib/paneLayout";
 import type { PaneDirection } from "./lib/paneLayout";
+import { setBroadcastTargetsProvider } from "./lib/broadcast";
 import { clampFontSize, DEFAULT_FONT_SIZE } from "./lib/font";
 import { useSettingsStore } from "./stores/settingsStore";
 import { useAgentStore } from "./stores/agentStore";
-import { closeTerminal, saveSession, loadSession, initNotifications, showSystemNotification, writeTerminal, getCwd, getTerminalShell, getScrollback, openDevtools, diagLog } from "./lib/ipc";
+import { closeTerminal, saveSession, loadSession, initNotifications, showSystemNotification, writeTerminal, getCwd, getTerminalShell, getScrollback, openDevtools, diagLog, gitToplevel, gitWorktreeAdd } from "./lib/ipc";
+import { branchFromPath } from "./lib/worktree";
 import type { SessionData, PaneNode, PaneNodeData } from "./types";
 
 function quotePath(p: string): string {
@@ -421,6 +425,30 @@ export default function App() {
     if (activePane) store.toggleZoom(ws.id, activePane.id);
   }, []);
 
+  /**
+   * Toggle broadcast input for the active workspace (Ctrl+Shift+G). When on,
+   * keystrokes typed into any pane are mirrored to every other pane in the
+   * workspace. Paste flows through xterm onData, so it broadcasts too.
+   */
+  const handleToggleBroadcast = useCallback(() => {
+    const store = useWorkspaceStore.getState();
+    const ws = store.workspaces.find((w) => w.id === store.activeWorkspaceId);
+    if (ws) store.toggleBroadcast(ws.id);
+  }, []);
+
+  // Register the broadcast fan-out resolver once. TerminalView reads it
+  // synchronously on every keystroke (its effect mounts once), so this must
+  // not depend on render state — it pulls fresh store state per keystroke.
+  useEffect(() => {
+    setBroadcastTargetsProvider((selfId) => {
+      const s = useWorkspaceStore.getState();
+      const ws = s.workspaces.find((w) => getTerminalIds(w.paneTree).includes(selfId));
+      if (!ws || !ws.broadcastInput) return [];
+      return getTerminalIds(ws.paneTree);
+    });
+    return () => setBroadcastTargetsProvider(null);
+  }, []);
+
   const handleJumpToTerminal = useCallback((terminalId: string): boolean => {
     const store = useWorkspaceStore.getState();
     const ws = store.workspaces.find((w) => getTerminalIds(w.paneTree).includes(terminalId));
@@ -486,8 +514,11 @@ export default function App() {
     }
   }, []);
 
-  // Alt+Arrow pane navigation. Registered in the capture phase so xterm never
-  // forwards the chord to the shell.
+  // Chords xterm would otherwise forward to the shell. Registered in the
+  // capture phase so the terminal textarea never sees them: xterm's own
+  // keydown listener translates Ctrl+Shift+<letter> into control characters
+  // sent via onData before a bubble-phase window handler could prevent it.
+  // (Placed after all handlers it references to avoid TDZ issues.)
   useEffect(() => {
     const directions: Record<string, PaneDirection> = {
       ArrowLeft: "left",
@@ -496,16 +527,31 @@ export default function App() {
       ArrowDown: "down",
     };
     const handler = (e: KeyboardEvent) => {
-      if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
-      const direction = directions[e.key];
-      if (!direction) return;
-      e.preventDefault();
-      e.stopPropagation();
-      handleFocusDirection(direction);
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+        const direction = directions[e.key];
+        if (!direction) return;
+        e.preventDefault();
+        e.stopPropagation();
+        handleFocusDirection(direction);
+        return;
+      }
+      if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey) {
+        const key = e.key.toLowerCase();
+        if (key === "g") {
+          e.preventDefault();
+          e.stopPropagation();
+          handleToggleBroadcast();
+        } else if (key === "u") {
+          e.preventDefault();
+          e.stopPropagation();
+          void handleOpenWorktreeDialog();
+        }
+      }
     };
     window.addEventListener("keydown", handler, { capture: true });
     return () => window.removeEventListener("keydown", handler, { capture: true });
-  }, [handleFocusDirection]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleOpenBrowser = useCallback(() => {
     if (!activeWorkspace) return;
@@ -518,11 +564,62 @@ export default function App() {
     }
   }, [activeWorkspace, openBrowserInSplit]);
 
+  // Startup commands queued per pane id; consumed once the terminal reports
+  // ready (agent presets). Pane ids are stable, so a ref is enough.
+  const pendingSpawnsRef = useRef(new Map<string, string>());
+
   const handleNewWorkspace = useCallback(
-    (preset: LayoutPreset, name: string) => {
+    async (preset: LayoutPreset, name: string) => {
       const tree = preset.build();
-      createWorkspaceWithTree(name, tree);
+      if (preset.spawns && preset.spawns.length > 0) {
+        // Map spawns to terminal panes in layout (DFS) order.
+        const paneIds = computeLayout(tree)
+          .leaves.filter((l) => l.node.type === "terminal")
+          .map((l) => l.node.id);
+        paneIds.forEach((paneId, i) => {
+          const cmd = preset.spawns?.[i];
+          if (cmd) pendingSpawnsRef.current.set(paneId, cmd);
+        });
+      }
+      // New workspaces start in the active terminal's directory (when it has
+      // one) so agent presets like `npm run dev` run in the project, not home.
+      const store = useWorkspaceStore.getState();
+      const ws = store.workspaces.find((w) => w.id === store.activeWorkspaceId);
+      const cwd = await resolvePaneCwd(ws?.activeTerminalId ?? null);
+      createWorkspaceWithTree(name, cwd ? applyCwdToTree(tree, cwd) : tree);
       setPresetPickerVisible(false);
+    },
+    [createWorkspaceWithTree, resolvePaneCwd]
+  );
+
+  const [worktreeDialogVisible, setWorktreeDialogVisible] = useState(false);
+  const [worktreeDefaultRepo, setWorktreeDefaultRepo] = useState<string | null>(null);
+
+  const handleOpenWorktreeDialog = useCallback(async () => {
+    // Prefill the repo from the active terminal's cwd when it's inside git.
+    let repo: string | null = null;
+    try {
+      const store = useWorkspaceStore.getState();
+      const ws = store.workspaces.find((w) => w.id === store.activeWorkspaceId);
+      const tid = ws?.activeTerminalId ?? null;
+      if (tid) {
+        const cwd = await getCwd(tid).catch(() => "");
+        if (cwd) repo = await gitToplevel(cwd);
+      }
+    } catch {
+      repo = null;
+    }
+    setWorktreeDefaultRepo(repo);
+    setWorktreeDialogVisible(true);
+  }, []);
+
+  const handleCreateWorktree = useCallback(
+    async (repo: string, path: string, branch: string) => {
+      await gitWorktreeAdd(repo, path, branch);
+      const paneId = `pane-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const tree: PaneNode = { type: "terminal", id: paneId, terminalId: "", cwd: path };
+      createWorkspaceWithTree(branchFromPath(path), tree);
+      setWorktreeDialogVisible(false);
     },
     [createWorkspaceWithTree]
   );
@@ -583,6 +680,9 @@ export default function App() {
       } else if (e.ctrlKey && e.shiftKey && e.key === "L") {
         e.preventDefault();
         handleOpenBrowser();
+        // NOTE: Ctrl+Shift+G (broadcast) and Ctrl+Shift+U (worktree) are
+        // handled in the capture-phase listener above — by the time a bubble
+        // handler runs, xterm has already forwarded them to the shell.
       } else if (e.ctrlKey && !e.shiftKey && e.key >= "1" && e.key <= "9") {
         const index = parseInt(e.key) - 1;
         if (index < workspaces.length) {
@@ -599,6 +699,11 @@ export default function App() {
   const commands = useMemo(
     () => [
       { id: "newWorkspace", label: "New Workspace...", shortcut: "Ctrl+Shift+T", action: () => setPresetPickerVisible(true) },
+      ...AGENT_PRESETS.map((p) => ({
+        id: `agent-preset-${p.id}`,
+        label: `New ${p.name} workspace`,
+        action: () => { void handleNewWorkspace(p, p.name); },
+      })),
       { id: "splitRight", label: "Split Right", shortcut: "Ctrl+Shift+D", action: () => handleSplit("horizontal") },
       { id: "splitDown", label: "Split Down", shortcut: "Ctrl+Shift+E", action: () => handleSplit("vertical") },
       { id: "focusLeft", label: "Focus Pane Left", shortcut: "Alt+Left", action: () => handleFocusDirection("left") },
@@ -616,6 +721,8 @@ export default function App() {
       { id: "nextNotification", label: "Next Notification", shortcut: "Ctrl+Shift+N", action: handleNextNotification },
       { id: "prevNotification", label: "Previous Notification", shortcut: "Ctrl+Shift+B", action: handlePrevNotification },
       { id: "openBrowser", label: "Open Browser in Split", shortcut: "Ctrl+Shift+L", action: handleOpenBrowser },
+      { id: "toggleBroadcast", label: "Toggle Broadcast Input", shortcut: "Ctrl+Shift+G", action: handleToggleBroadcast },
+      { id: "worktreeWorkspace", label: "New Workspace from Git Worktree…", shortcut: "Ctrl+Shift+U", action: () => { void handleOpenWorktreeDialog(); } },
       { id: "testNotification", label: "Send Test Notification", action: () => showSystemNotification("WinMux", "Notifications are working!") },
       ...workspaces.map((w, i) => ({
         id: `workspace-${w.id}`,
@@ -624,7 +731,7 @@ export default function App() {
         action: () => setActiveWorkspace(w.id),
       })),
     ],
-    [workspaces, handleSplit, handleFocusDirection, handleToggleZoom, zoomFont, resetFont, toggleSidebar, setActiveWorkspace, handleNextNotification, handlePrevNotification]
+    [workspaces, handleSplit, handleFocusDirection, handleToggleZoom, zoomFont, resetFont, toggleSidebar, setActiveWorkspace, handleNextNotification, handlePrevNotification, handleToggleBroadcast, handleNewWorkspace]
   );
 
   return (
@@ -667,6 +774,16 @@ export default function App() {
                   const updated = setPaneTerminalId(ws.paneTree, paneId, terminalId);
                   updatePaneTree(ws.id, updated);
                   setActiveTerminal(ws.id, terminalId);
+                  // Agent preset: boot the queued command once the shell is up.
+                  // Small delay so the prompt is ready; PTY input would queue
+                  // anyway, this just avoids racing profile output.
+                  const spawn = pendingSpawnsRef.current.get(paneId);
+                  if (spawn) {
+                    pendingSpawnsRef.current.delete(paneId);
+                    setTimeout(() => {
+                      writeTerminal(terminalId, `${spawn}\r`).catch(console.error);
+                    }, 600);
+                  }
                 }}
                 onTerminalFocus={(terminalId) =>
                   setActiveTerminal(ws.id, terminalId)
@@ -685,6 +802,42 @@ export default function App() {
               />
             </div>
           ))}
+
+          {activeWorkspace?.broadcastInput && (
+            <div
+              onClick={handleToggleBroadcast}
+              title="Broadcast input is ON — click to turn off (Ctrl+Shift+G)"
+              style={{
+                position: "absolute",
+                bottom: 10,
+                right: 12,
+                zIndex: 300,
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "4px 10px",
+                background: "rgba(239, 68, 68, 0.92)",
+                borderRadius: 10,
+                boxShadow: "0 1px 6px rgba(0,0,0,0.4)",
+                cursor: "pointer",
+                userSelect: "none",
+              }}
+            >
+              <span
+                style={{
+                  width: 7,
+                  height: 7,
+                  borderRadius: "50%",
+                  background: "#fff",
+                  display: "inline-block",
+                  flexShrink: 0,
+                }}
+              />
+              <span style={{ fontSize: 10, fontWeight: 700, color: "#fff", lineHeight: 1 }}>
+                BROADCAST · {getTerminalIds(activeWorkspace.paneTree).length} panes
+              </span>
+            </div>
+          )}
 
           <TerminalSearch
             visible={searchVisible}
@@ -710,6 +863,17 @@ export default function App() {
         visible={presetPickerVisible}
         onSelect={handleNewWorkspace}
         onClose={() => setPresetPickerVisible(false)}
+        onWorktree={() => {
+          setPresetPickerVisible(false);
+          void handleOpenWorktreeDialog();
+        }}
+      />
+
+      <WorktreeDialog
+        visible={worktreeDialogVisible}
+        defaultRepo={worktreeDefaultRepo}
+        onSubmit={handleCreateWorktree}
+        onClose={() => setWorktreeDialogVisible(false)}
       />
 
       <UpdateBanner />

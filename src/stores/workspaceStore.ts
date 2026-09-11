@@ -40,6 +40,8 @@ interface WorkspaceStore {
   resetPane: (workspaceId: string, paneId: string) => void;
   /** Toggle full-bleed zoom for a pane (Ctrl+Shift+Z). */
   toggleZoom: (workspaceId: string, paneId: string) => void;
+  /** Toggle broadcast: keystrokes in any pane mirror to all panes (Ctrl+Shift+G). */
+  toggleBroadcast: (workspaceId: string) => void;
   setSidebarWidth: (width: number) => void;
   toggleSidebar: () => void;
   setGitBranch: (workspaceId: string, branch: string | null) => void;
@@ -69,6 +71,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
       },
       activeTerminalId: null,
       zoomedPaneId: null,
+      broadcastInput: false,
       gitBranch: null,
       cwd: null,
       unreadCount: 0,
@@ -92,6 +95,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
       paneTree: tree,
       activeTerminalId: null,
       zoomedPaneId: null,
+      broadcastInput: false,
       gitBranch: null,
       cwd: null,
       unreadCount: 0,
@@ -246,6 +250,14 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     }));
   },
 
+  toggleBroadcast: (workspaceId) => {
+    set((state) => ({
+      workspaces: state.workspaces.map((w) =>
+        w.id === workspaceId ? { ...w, broadcastInput: !w.broadcastInput } : w
+      ),
+    }));
+  },
+
   setSidebarWidth: (width) => set({ sidebarWidth: width }),
   toggleSidebar: () => set((s) => ({ sidebarVisible: !s.sidebarVisible })),
 
@@ -316,6 +328,26 @@ function splitNode(
   }
 
   return node;
+}
+
+/**
+ * Set `cwd` on every terminal pane that doesn't already define one.
+ * Used when creating a workspace from a preset so all panes (including
+ * agent-preset panes like `npm run dev`) start in the active project
+ * directory instead of falling back to the home directory.
+ */
+export function applyCwdToTree(node: PaneNode, cwd: string): PaneNode {
+  if (node.type === "terminal") {
+    return node.cwd ? node : { ...node, cwd };
+  }
+  if (node.type === "browser") {
+    return node;
+  }
+  return {
+    ...node,
+    first: applyCwdToTree(node.first, cwd),
+    second: applyCwdToTree(node.second, cwd),
+  };
 }
 
 /** Terminal id owned by a pane, if that pane currently has one. */
