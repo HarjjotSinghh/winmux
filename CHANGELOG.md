@@ -3,6 +3,19 @@
 All notable changes to WinMux are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.17] - 2026-09-11
+
+### Added - terminal font zoom
+
+- **Ctrl+= / Ctrl++ zooms the terminal font in, Ctrl+- zooms out, Ctrl+0
+  resets** to the default 14 px (range 8-32). The change applies live to every
+  mounted terminal and is persisted to `settings.json`, so it survives
+  restarts. Previously the `fontSize` setting existed but nothing read it.
+- Terminal views now take their font size from settings and refit on change
+  without touching their PTY sessions.
+- Command palette entries for Increase / Decrease / Reset Terminal Font.
+- `clampFontSize` unit tests.
+
 ## [0.4.16] - 2026-09-11
 
 ### Added - scrollback search
