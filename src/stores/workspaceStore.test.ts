@@ -109,3 +109,39 @@ describe("workspaceStore pane tree", () => {
     expect(getFirstTerminalId(tree)).toBe("term-1");
   });
 });
+
+describe("workspaceStore pane zoom", () => {
+  beforeEach(resetStore);
+
+  it("toggleZoom sets and clears the zoomed pane", () => {
+    const { workspaceId, paneId } = workspaceWithTerminal("term-1");
+
+    useWorkspaceStore.getState().toggleZoom(workspaceId, paneId);
+    expect(useWorkspaceStore.getState().workspaces[0].zoomedPaneId).toBe(paneId);
+
+    useWorkspaceStore.getState().toggleZoom(workspaceId, paneId);
+    expect(useWorkspaceStore.getState().workspaces[0].zoomedPaneId).toBeNull();
+  });
+
+  it("splitting clears zoom so the new pane is visible", () => {
+    const { workspaceId, paneId } = workspaceWithTerminal("term-1");
+    useWorkspaceStore.getState().toggleZoom(workspaceId, paneId);
+
+    useWorkspaceStore.getState().splitPane(workspaceId, paneId, "horizontal", "");
+
+    expect(useWorkspaceStore.getState().workspaces[0].zoomedPaneId).toBeNull();
+  });
+
+  it("closing the zoomed pane clears zoom", () => {
+    const { workspaceId, paneId } = workspaceWithTerminal("term-1");
+    useWorkspaceStore.getState().splitPane(workspaceId, paneId, "horizontal", "");
+    const split = useWorkspaceStore.getState().workspaces[0].paneTree;
+    if (split.type !== "split") throw new Error("expected split");
+    const newPaneId = split.second.id;
+    useWorkspaceStore.getState().toggleZoom(workspaceId, newPaneId);
+
+    useWorkspaceStore.getState().closePane(workspaceId, newPaneId);
+
+    expect(useWorkspaceStore.getState().workspaces[0].zoomedPaneId).toBeNull();
+  });
+});

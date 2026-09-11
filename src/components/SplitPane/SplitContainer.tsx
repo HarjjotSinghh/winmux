@@ -14,6 +14,8 @@ interface SplitContainerProps {
   onSplit?: (paneId: string, direction: "horizontal" | "vertical") => void;
   onClosePane?: (paneId: string) => void;
   onRatioChange?: (splitId: string, ratio: number) => void;
+  /** Pane shown full-bleed on top; the rest stay mounted underneath. */
+  zoomedPaneId?: string | null;
 }
 
 /**
@@ -36,6 +38,7 @@ export default function SplitContainer({
   onSplit,
   onClosePane,
   onRatioChange,
+  zoomedPaneId,
 }: SplitContainerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const { leaves, splits } = useMemo(() => computeLayout(node), [node]);
@@ -43,6 +46,11 @@ export default function SplitContainer({
   // Show the active-pane ring only when there is more than one pane — a lone
   // terminal shouldn't carry a permanent outline.
   const showFocusRing = leaves.length > 1;
+
+  // Ignore a stale zoom id (pane closed) so the layout can't get stuck.
+  const zoomedLeafId = leaves.some((l) => l.node.id === zoomedPaneId)
+    ? zoomedPaneId
+    : null;
 
   return (
     <div
@@ -54,7 +62,10 @@ export default function SplitContainer({
         overflow: "hidden",
       }}
     >
-      {leaves.map(({ node: leaf, rect }) => (
+      {leaves.map(({ node: leaf, rect: layoutRect }) => {
+        const isZoomed = leaf.id === zoomedLeafId;
+        const rect = isZoomed ? { x: 0, y: 0, w: 1, h: 1 } : layoutRect;
+        return (
         <div
           key={leaf.id}
           style={{
@@ -64,6 +75,7 @@ export default function SplitContainer({
             width: `${rect.w * 100}%`,
             height: `${rect.h * 100}%`,
             overflow: "hidden",
+            zIndex: isZoomed ? 30 : undefined,
           }}
         >
           <PaneFrame
@@ -93,16 +105,18 @@ export default function SplitContainer({
             )}
           </PaneFrame>
         </div>
-      ))}
+        );
+      })}
 
-      {splits.map((split) => (
-        <PaneDivider
-          key={split.id}
-          split={split}
-          containerRef={containerRef}
-          onRatioChange={onRatioChange}
-        />
-      ))}
+      {!zoomedLeafId &&
+        splits.map((split) => (
+          <PaneDivider
+            key={split.id}
+            split={split}
+            containerRef={containerRef}
+            onRatioChange={onRatioChange}
+          />
+        ))}
     </div>
   );
 }

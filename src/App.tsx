@@ -327,6 +327,18 @@ export default function App() {
   }, [activeWorkspace, handlePaneClose]);
 
   /**
+   * Toggle full-bleed zoom for the active pane (Ctrl+Shift+Z). The other
+   * panes stay mounted underneath, so no PTY is ever disturbed.
+   */
+  const handleToggleZoom = useCallback(() => {
+    const store = useWorkspaceStore.getState();
+    const ws = store.workspaces.find((w) => w.id === store.activeWorkspaceId);
+    if (!ws) return;
+    const activePane = findActivePaneNode(ws.paneTree, ws.activeTerminalId);
+    if (activePane) store.toggleZoom(ws.id, activePane.id);
+  }, []);
+
+  /**
    * Move keyboard focus to the nearest pane in a direction (Alt+Arrow).
    * Geometry-based, so it always matches the visible layout.
    */
@@ -407,6 +419,9 @@ export default function App() {
       } else if (e.ctrlKey && e.shiftKey && e.key === "E") {
         e.preventDefault();
         handleSplit("vertical");
+      } else if (e.ctrlKey && e.shiftKey && e.key === "Z") {
+        e.preventDefault();
+        handleToggleZoom();
       } else if (e.ctrlKey && !e.shiftKey && e.key === "b") {
         e.preventDefault();
         toggleSidebar();
@@ -430,7 +445,7 @@ export default function App() {
 
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [workspaces, setActiveWorkspace, toggleSidebar, handleSplit, handleCloseActivePane, handleOpenBrowser]);
+  }, [workspaces, setActiveWorkspace, toggleSidebar, handleSplit, handleCloseActivePane, handleOpenBrowser, handleToggleZoom]);
 
   const commands = useMemo(
     () => [
@@ -441,6 +456,7 @@ export default function App() {
       { id: "focusRight", label: "Focus Pane Right", shortcut: "Alt+Right", action: () => handleFocusDirection("right") },
       { id: "focusUp", label: "Focus Pane Up", shortcut: "Alt+Up", action: () => handleFocusDirection("up") },
       { id: "focusDown", label: "Focus Pane Down", shortcut: "Alt+Down", action: () => handleFocusDirection("down") },
+      { id: "zoomPane", label: "Zoom Active Pane", shortcut: "Ctrl+Shift+Z", action: handleToggleZoom },
       { id: "toggleSidebar", label: "Toggle Sidebar", shortcut: "Ctrl+B", action: toggleSidebar },
       { id: "notifications", label: "Toggle Notifications", shortcut: "Ctrl+Shift+I", action: () => setNotifPanelVisible((v) => !v) },
       { id: "openBrowser", label: "Open Browser in Split", shortcut: "Ctrl+Shift+L", action: handleOpenBrowser },
@@ -452,7 +468,7 @@ export default function App() {
         action: () => setActiveWorkspace(w.id),
       })),
     ],
-    [workspaces, handleSplit, handleFocusDirection, toggleSidebar, setActiveWorkspace]
+    [workspaces, handleSplit, handleFocusDirection, handleToggleZoom, toggleSidebar, setActiveWorkspace]
   );
 
   return (
@@ -508,6 +524,7 @@ export default function App() {
                     ? (splitId, ratio) => setPaneRatio(ws.id, splitId, ratio)
                     : undefined
                 }
+                zoomedPaneId={ws.zoomedPaneId ?? null}
               />
             </div>
           ))}

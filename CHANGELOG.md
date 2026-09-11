@@ -3,6 +3,18 @@
 All notable changes to WinMux are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.15] - 2026-09-11
+
+### Added - pane zoom
+
+- **Ctrl+Shift+Z zooms the active pane** to fill the workspace. The other
+  panes stay mounted underneath at their normal size, so their PTYs are never
+  resized or re-created; dividers are hidden while zoomed.
+- Zoom is per workspace, auto-clears when the zoomed pane is split, closed or
+  respawned, and a stale zoom id can never wedge the layout.
+- Command palette entry: Zoom Active Pane.
+- 3 new store tests (toggle, clear-on-split, clear-on-close).
+
 ## [0.4.14] - 2026-09-11
 
 ### Added - keyboard pane navigation
