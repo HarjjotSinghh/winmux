@@ -66,13 +66,17 @@ type ConfigState = Arc<Mutex<Settings>>;
 
 // ── Terminal Commands ──────────────────────────────────────────────
 
+// NOTE: Daemon-touching commands are `async fn` on purpose. In Tauri v2 a
+// synchronous command runs its body on the main thread, so a slow/hung pipe
+// RPC freezes the whole UI (the old "Not Responding" reports). An `async fn`
+// command is polled on the async runtime instead.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn create_terminal(
+pub async fn create_terminal(
     app: AppHandle,
-    pty_manager: State<PtyState>,
-    daemon: State<DaemonHandle>,
-    config: State<ConfigState>,
+    pty_manager: State<'_, PtyState>,
+    daemon: State<'_, Arc<DaemonHandle>>,
+    config: State<'_, ConfigState>,
     shell: Option<String>,
     cwd: Option<String>,
     cols: Option<u16>,
@@ -90,29 +94,33 @@ pub fn create_terminal(
     let c = cols.unwrap_or(80);
     let r = rows.unwrap_or(24);
 
-    // Prefer daemon if available (PTY survives UI restarts)
+    // Prefer daemon if available (PTY survives UI restarts). If the daemon RPC
+    // fails — common while the supervisor is reconnecting after a crash — fall
+    // through to an in-process PTY instead of surfacing a failed terminal.
     if let Some(d) = daemon.get() {
         // We won't know the ID until the daemon responds, so build sinks with a
         // placeholder; once we know the real ID we re-register sinks keyed by it.
-        // Simplest: register AFTER we know the ID by building sinks inline with the
-        // id we get back. DaemonClient::create_session does this via re-insert.
-        // Build sinks where the terminal_id is filled in by the daemon.
-        // We use a placeholder here — the daemon uses its own assigned UUID.
-        let placeholder_sinks =
-            build_daemon_sinks(app.clone(), on_output.clone(), String::new());
-        let id = d.create_session(
+        let placeholder_sinks = build_daemon_sinks(app.clone(), on_output.clone(), String::new());
+        match d.create_session(
             Some(&shell_path),
             working_dir.as_deref(),
             c,
             r,
             placeholder_sinks,
-        )?;
-
-        // Re-register sinks with the real id so emitted osc/exit events carry it.
-        let real_sinks = build_daemon_sinks(app, on_output, id.clone());
-        // attach_session re-registers; it's safe to call again (daemon idempotent).
-        d.attach_session(&id, real_sinks)?;
-        return Ok(id);
+        ) {
+            Ok(id) => {
+                // Re-register sinks with the real id so emitted osc/exit events
+                // carry it. Safe to call again — the daemon attach is idempotent.
+                let real_sinks = build_daemon_sinks(app, on_output, id.clone());
+                if let Err(e) = d.attach_session(&id, real_sinks) {
+                    log::warn!("daemon re-attach after create failed: {}", e);
+                }
+                return Ok(id);
+            }
+            Err(e) => {
+                log::warn!("daemon create_session failed ({}); using in-process PTY", e);
+            }
+        }
     }
 
     // Fallback: in-process PTY
@@ -120,32 +128,72 @@ pub fn create_terminal(
     let callbacks = build_tauri_callbacks(app, on_output, id.clone());
 
     let mut mgr = pty_manager.lock().map_err(|e| e.to_string())?;
-    mgr.create(id.clone(), &shell_path, working_dir.as_deref(), c, r, callbacks)?;
+    mgr.create(
+        id.clone(),
+        &shell_path,
+        working_dir.as_deref(),
+        c,
+        r,
+        callbacks,
+    )?;
     Ok(id)
 }
 
-/// Re-attach to a pre-existing PTY (used on UI restore or pane split). Returns
-/// the scrollback bytes so the UI can replay them before live output resumes.
+/// Re-attach to a pre-existing PTY (used on UI restore). Returns the
+/// scrollback bytes so the UI can replay them before live output resumes.
 ///
 /// Priority: daemon first (sessions survive UI restart); fall back to the
-/// in-process `PtyManager` so split-induced remounts still preserve state
-/// even when the daemon isn't running.
+/// in-process `PtyManager`. The fallback matters because terminals created
+/// before the daemon finished connecting live in-process — without it the
+/// daemon answers `not_found` and the session looks dead.
 #[tauri::command]
-pub fn attach_terminal(
+pub async fn attach_terminal(
     app: AppHandle,
-    pty_manager: State<PtyState>,
-    daemon: State<DaemonHandle>,
+    pty_manager: State<'_, PtyState>,
+    daemon: State<'_, Arc<DaemonHandle>>,
     session_id: String,
     on_output: Channel<Vec<u8>>,
 ) -> Result<AttachInfo, String> {
-    if let Some(d) = daemon.get() {
-        let sinks = build_daemon_sinks(app, on_output, session_id.clone());
-        let info = d.attach_session(&session_id, sinks)?;
-        return Ok(AttachInfo {
-            scrollback_b64: base64::engine::general_purpose::STANDARD.encode(&info.scrollback),
-            shell: info.shell,
-            cwd: info.cwd,
-        });
+    let pty = pty_manager.inner().clone();
+    let daemon = daemon.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        attach_terminal_blocking(app, &pty, &daemon, session_id, on_output)
+    })
+    .await
+    .map_err(|e| format!("attach task failed: {}", e))?
+}
+
+fn attach_terminal_blocking(
+    app: AppHandle,
+    pty_manager: &PtyState,
+    daemon: &Arc<DaemonHandle>,
+    session_id: String,
+    on_output: Channel<Vec<u8>>,
+) -> Result<AttachInfo, String> {
+    // On app relaunch the UI restores panes immediately while the daemon is
+    // still connecting in the background. Give it a short grace period so we
+    // re-attach to the surviving PTY instead of abandoning it for a fresh
+    // shell. No-op (and fast) when the daemon is already connected.
+    let d = wait_for_daemon(daemon, std::time::Duration::from_millis(1500));
+    if let Some(d) = d {
+        let sinks = build_daemon_sinks(app.clone(), on_output.clone(), session_id.clone());
+        match d.attach_session(&session_id, sinks) {
+            Ok(info) => {
+                return Ok(AttachInfo {
+                    scrollback_b64: base64::engine::general_purpose::STANDARD
+                        .encode(&info.scrollback),
+                    shell: info.shell,
+                    cwd: info.cwd,
+                });
+            }
+            Err(e) => {
+                log::debug!(
+                    "daemon attach failed for {} ({}); trying in-process",
+                    session_id,
+                    e
+                );
+            }
+        }
     }
 
     // In-process fallback: swap the existing session's callbacks to the new
@@ -168,6 +216,24 @@ pub struct AttachInfo {
     pub scrollback_b64: String,
     pub shell: String,
     pub cwd: String,
+}
+
+/// Poll for the daemon client to appear (it connects on a background thread at
+/// startup). Returns as soon as it's available, or `None` after `timeout`.
+fn wait_for_daemon(
+    daemon: &DaemonHandle,
+    timeout: std::time::Duration,
+) -> Option<std::sync::Arc<crate::daemon_client::DaemonClient>> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Some(d) = daemon.get() {
+            return Some(d);
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }
 
 fn build_tauri_callbacks(
@@ -207,78 +273,106 @@ fn build_tauri_callbacks(
     }
 }
 
+// Terminal commands route to the daemon when it owns the session, but must
+// fall back to the in-process manager. Sessions are created in-process before
+// the daemon finishes connecting; sending their keystrokes to a daemon that
+// has never heard of them would silently drop input.
+
 #[tauri::command]
-pub fn write_terminal(
-    pty_manager: State<PtyState>,
-    daemon: State<DaemonHandle>,
+pub async fn write_terminal(
+    pty_manager: State<'_, PtyState>,
+    daemon: State<'_, Arc<DaemonHandle>>,
     id: String,
     data: Vec<u8>,
 ) -> Result<(), String> {
     if let Some(d) = daemon.get() {
-        return d.write_session(&id, &data);
+        match d.write_session(&id, &data) {
+            Ok(()) => return Ok(()),
+            Err(e) => log::debug!("daemon write failed ({}); trying in-process", e),
+        }
     }
     let mgr = pty_manager.lock().map_err(|e| e.to_string())?;
     mgr.write(&id, &data)
 }
 
 #[tauri::command]
-pub fn resize_terminal(
-    pty_manager: State<PtyState>,
-    daemon: State<DaemonHandle>,
+pub async fn resize_terminal(
+    pty_manager: State<'_, PtyState>,
+    daemon: State<'_, Arc<DaemonHandle>>,
     id: String,
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
     if let Some(d) = daemon.get() {
-        return d.resize_session(&id, cols, rows);
+        match d.resize_session(&id, cols, rows) {
+            Ok(()) => return Ok(()),
+            Err(e) => log::debug!("daemon resize failed ({}); trying in-process", e),
+        }
     }
     let mut mgr = pty_manager.lock().map_err(|e| e.to_string())?;
     mgr.resize(&id, cols, rows)
 }
 
 #[tauri::command]
-pub fn close_terminal(
-    pty_manager: State<PtyState>,
-    daemon: State<DaemonHandle>,
+pub async fn close_terminal(
+    pty_manager: State<'_, PtyState>,
+    daemon: State<'_, Arc<DaemonHandle>>,
     id: String,
 ) -> Result<(), String> {
+    // Closing is idempotent: if neither the daemon nor the in-process manager
+    // knows the session, it's already gone — that's success, not an error
+    // (unmount/exit races used to surface as console errors).
     if let Some(d) = daemon.get() {
-        return d.close_session(&id);
+        if d.close_session(&id).is_ok() {
+            return Ok(());
+        }
     }
     let mut mgr = pty_manager.lock().map_err(|e| e.to_string())?;
-    mgr.close(&id)
+    match mgr.close(&id) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            log::debug!("close_terminal: {} not found anywhere ({})", id, e);
+            Ok(())
+        }
+    }
 }
 
 #[tauri::command]
-pub fn get_cwd(
-    pty_manager: State<PtyState>,
-    daemon: State<DaemonHandle>,
+pub async fn get_cwd(
+    pty_manager: State<'_, PtyState>,
+    daemon: State<'_, Arc<DaemonHandle>>,
     id: String,
 ) -> Result<String, String> {
     if let Some(d) = daemon.get() {
-        return d.get_cwd(&id);
+        match d.get_cwd(&id) {
+            Ok(cwd) => return Ok(cwd),
+            Err(e) => log::debug!("daemon get_cwd failed ({}); trying in-process", e),
+        }
     }
     let mgr = pty_manager.lock().map_err(|e| e.to_string())?;
     mgr.get_cwd(&id)
 }
 
 #[tauri::command]
-pub fn get_scrollback(
-    pty_manager: State<PtyState>,
-    daemon: State<DaemonHandle>,
+pub async fn get_scrollback(
+    pty_manager: State<'_, PtyState>,
+    daemon: State<'_, Arc<DaemonHandle>>,
     id: String,
 ) -> Result<Vec<u8>, String> {
     if let Some(d) = daemon.get() {
-        return d.get_scrollback(&id);
+        match d.get_scrollback(&id) {
+            Ok(bytes) => return Ok(bytes),
+            Err(e) => log::debug!("daemon get_scrollback failed ({}); trying in-process", e),
+        }
     }
     let mgr = pty_manager.lock().map_err(|e| e.to_string())?;
     mgr.get_scrollback(&id)
 }
 
 #[tauri::command]
-pub fn get_terminal_shell(
-    pty_manager: State<PtyState>,
-    daemon: State<DaemonHandle>,
+pub async fn get_terminal_shell(
+    pty_manager: State<'_, PtyState>,
+    daemon: State<'_, Arc<DaemonHandle>>,
     id: String,
 ) -> Result<String, String> {
     if let Some(d) = daemon.get() {
@@ -288,7 +382,7 @@ pub fn get_terminal_shell(
                 return Ok(s.shell);
             }
         }
-        return Err(format!("session not found: {}", id));
+        log::debug!("daemon has no shell for {}; trying in-process", id);
     }
     let mgr = pty_manager.lock().map_err(|e| e.to_string())?;
     mgr.get_shell(&id)
@@ -428,7 +522,10 @@ fn save_clipboard_image(bmp_bytes: &[u8]) -> Result<String, String> {
     let temp_dir = std::env::temp_dir().join("winmux").join("clipboard");
     fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
 
-    let filename = format!("winmux-clipboard-{}.png", Utc::now().format("%Y%m%d-%H%M%S%3f"));
+    let filename = format!(
+        "winmux-clipboard-{}.png",
+        Utc::now().format("%Y%m%d-%H%M%S%3f")
+    );
     let path = temp_dir.join(filename);
 
     img.save_with_format(&path, image::ImageFormat::Png)
@@ -490,7 +587,7 @@ pub fn open_devtools(window: WebviewWindow) {
 /// (v0.4.12+) this is defence-in-depth — it also surfaces half-open
 /// pipes quickly, since a stale pipe will make the ping fail fast.
 #[tauri::command]
-pub fn ping_daemon(daemon: State<DaemonHandle>) -> Result<bool, String> {
+pub async fn ping_daemon(daemon: State<'_, Arc<DaemonHandle>>) -> Result<bool, String> {
     if let Some(d) = daemon.get() {
         d.ping().map(|_| true)
     } else {
@@ -511,7 +608,7 @@ pub fn diag_log(level: String, msg: String) {
 }
 
 #[tauri::command]
-pub fn quit_app(app: AppHandle, daemon: State<DaemonHandle>) {
+pub fn quit_app(app: AppHandle, daemon: State<'_, Arc<DaemonHandle>>) {
     log::info!("Explicit quit requested");
     // Mark first so the reconnect supervisor skips respawn when the pipe
     // closes during teardown.

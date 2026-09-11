@@ -112,6 +112,7 @@ export type PaneNodeData =
       /** Daemon session ID to re-attach on restore (present only when daemon owned the PTY). */
       sessionId?: string;
     }
+  | { type: "browser"; url: string }
   | {
       type: "split";
       direction: string;

@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
+pub use daemon_client::{DaemonClient, SessionSinks};
 pub use pty::{OscNotif, PtyManager, SessionCallbacks};
 
 /// Tauri-managed handle to the daemon client. `None` when the daemon
@@ -46,7 +47,9 @@ pub fn run() {
     let notification_store = Arc::new(Mutex::new(notification::NotificationStore::new()));
     let config = Arc::new(Mutex::new(config::Settings::load()));
 
-    let daemon_handle = DaemonHandle::default();
+    // Wrapped in Arc so async commands can clone a `'static` handle and run
+    // blocking daemon I/O on a worker thread instead of the main thread.
+    let daemon_handle = Arc::new(DaemonHandle::default());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
@@ -72,7 +75,7 @@ pub fn run() {
         .manage(pty_manager.clone())
         .manage(notification_store.clone())
         .manage(config.clone())
-        .manage(daemon_handle)
+        .manage(daemon_handle.clone())
         .invoke_handler(tauri::generate_handler![
             commands::create_terminal,
             commands::attach_terminal,
@@ -123,7 +126,7 @@ pub fn run() {
                     } else {
                         log::warn!("daemon: unavailable — using in-process PTYs");
                     }
-                    let handle = app_for_daemon.state::<DaemonHandle>();
+                    let handle = app_for_daemon.state::<Arc<DaemonHandle>>();
                     let mut slot = handle.client.lock().expect("DaemonHandle poisoned");
                     *slot = daemon_opt;
                 });
@@ -157,7 +160,7 @@ pub fn run() {
                     }
                     "quit" => {
                         log::info!("Quit requested from tray menu");
-                        let state: tauri::State<DaemonHandle> = app.state();
+                        let state: tauri::State<Arc<DaemonHandle>> = app.state();
                         state.mark_shutting_down();
                         if let Some(d) = state.get() {
                             // Non-blocking — do NOT wait on daemon shutdown,
@@ -195,7 +198,10 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                log::info!("Close requested on window '{}' — hiding to tray", window.label());
+                log::info!(
+                    "Close requested on window '{}' — hiding to tray",
+                    window.label()
+                );
                 let _ = window.hide();
                 api.prevent_close();
             }

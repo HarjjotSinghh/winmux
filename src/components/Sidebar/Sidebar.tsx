@@ -3,14 +3,15 @@ import WorkspaceTab from "./WorkspaceTab";
 
 interface SidebarProps {
   onNewWorkspace: () => void;
+  /** Closes the workspace AND kills the PTY sessions it owns. */
+  onCloseWorkspace: (workspaceId: string) => void;
 }
 
-export default function Sidebar({ onNewWorkspace }: SidebarProps) {
+export default function Sidebar({ onNewWorkspace, onCloseWorkspace }: SidebarProps) {
   const {
     workspaces,
     activeWorkspaceId,
     setActiveWorkspace,
-    removeWorkspace,
     renameWorkspace,
     setWorkspaceColor,
     sidebarWidth,
@@ -83,7 +84,7 @@ export default function Sidebar({ onNewWorkspace }: SidebarProps) {
             index={i}
             isActive={ws.id === activeWorkspaceId}
             onClick={() => setActiveWorkspace(ws.id)}
-            onClose={workspaces.length > 1 ? () => removeWorkspace(ws.id) : undefined}
+            onClose={workspaces.length > 1 ? () => onCloseWorkspace(ws.id) : undefined}
             onRename={(name) => renameWorkspace(ws.id, name)}
             onColorChange={(color) => setWorkspaceColor(ws.id, color)}
           />

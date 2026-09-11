@@ -36,6 +36,9 @@ jobs:
       - name: TypeScript check
         run: pnpm exec tsc --noEmit
 
+      - name: Frontend tests
+        run: pnpm test
+
       - name: Build frontend
         run: pnpm build
 

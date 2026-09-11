@@ -1,5 +1,7 @@
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { PaneNode } from "../../types";
+import type { SplitLayout } from "../../lib/paneLayout";
+import { computeLayout } from "../../lib/paneLayout";
 import TerminalView from "../Terminal/TerminalView";
 import BrowserView from "../Browser/BrowserView";
 
@@ -11,66 +13,170 @@ interface SplitContainerProps {
   shell?: string;
   onSplit?: (paneId: string, direction: "horizontal" | "vertical") => void;
   onClosePane?: (paneId: string) => void;
+  onRatioChange?: (splitId: string, ratio: number) => void;
 }
 
+/**
+ * Renders a pane tree as a flat, absolutely-positioned set of keyed leaves.
+ *
+ * Rendering the tree recursively makes React reconcile by *position*: when a
+ * terminal leaf turns into a split, the element at that position changes from
+ * a TerminalView to a layout container, so xterm is unmounted and remounted.
+ * Re-attaching the PTY on remount is lossy (daemon-only, drops visual state,
+ * blanks out when the session isn't attachable), which is why splitting used
+ * to reset terminals. Flat, keyed rendering keeps every TerminalView mounted
+ * for the lifetime of its pane.
+ */
 export default function SplitContainer({
-  node, onTerminalReady, onTerminalFocus, activeTerminalId, shell, onSplit, onClosePane,
+  node,
+  onTerminalReady,
+  onTerminalFocus,
+  activeTerminalId,
+  shell,
+  onSplit,
+  onClosePane,
+  onRatioChange,
 }: SplitContainerProps) {
-  if (node.type === "terminal") {
-    // If this pane already has a live session ID (e.g. because the user just
-    // split a pane and React remounted the TerminalView in a new tree
-    // position), synthesize a restore hint so the remount re-attaches to the
-    // daemon-owned PTY instead of spawning a fresh shell. Without this the
-    // split would wipe the terminal's state.
-    const restoreHint =
-      node.restore ||
-      (node.terminalId
-        ? {
-            cwd: "",
-            shell: "",
-            scrollbackBase64: "",
-            savedAt: Date.now(),
-            sessionId: node.terminalId,
-          }
-        : undefined);
-
-    return (
-      <PaneFrame
-        paneId={node.id}
-        onSplit={onSplit}
-        onClose={onClosePane}
-      >
-        <TerminalView
-          onReady={(tid) => onTerminalReady(node.id, tid)}
-          shell={restoreHint?.shell || shell}
-          cwd={restoreHint?.cwd}
-          restore={restoreHint}
-          focused={node.terminalId === activeTerminalId}
-          onFocus={() => { if (node.terminalId) onTerminalFocus(node.terminalId); }}
-        />
-      </PaneFrame>
-    );
-  }
-
-  if (node.type === "browser") {
-    return (
-      <PaneFrame
-        paneId={node.id}
-        onSplit={onSplit}
-        onClose={onClosePane}
-      >
-        <BrowserView initialUrl={node.url} />
-      </PaneFrame>
-    );
-  }
+  const containerRef = useRef<HTMLDivElement>(null);
+  const { leaves, splits } = useMemo(() => computeLayout(node), [node]);
 
   return (
-    <SplitView
-      direction={node.direction}
-      initialRatio={node.ratio}
-      first={<SplitContainer node={node.first} onTerminalReady={onTerminalReady} onTerminalFocus={onTerminalFocus} activeTerminalId={activeTerminalId} shell={shell} onSplit={onSplit} onClosePane={onClosePane} />}
-      second={<SplitContainer node={node.second} onTerminalReady={onTerminalReady} onTerminalFocus={onTerminalFocus} activeTerminalId={activeTerminalId} shell={shell} onSplit={onSplit} onClosePane={onClosePane} />}
-    />
+    <div
+      ref={containerRef}
+      style={{
+        position: "relative",
+        width: "100%",
+        height: "100%",
+        overflow: "hidden",
+      }}
+    >
+      {leaves.map(({ node: leaf, rect }) => (
+        <div
+          key={leaf.id}
+          style={{
+            position: "absolute",
+            left: `${rect.x * 100}%`,
+            top: `${rect.y * 100}%`,
+            width: `${rect.w * 100}%`,
+            height: `${rect.h * 100}%`,
+            overflow: "hidden",
+          }}
+        >
+          <PaneFrame
+            paneId={leaf.id}
+            onSplit={onSplit}
+            onClose={onClosePane}
+          >
+            {leaf.type === "terminal" ? (
+              <TerminalView
+                onReady={(tid) => onTerminalReady(leaf.id, tid)}
+                shell={leaf.restore?.shell || shell}
+                cwd={leaf.restore?.cwd}
+                restore={leaf.restore}
+                focused={leaf.terminalId === activeTerminalId}
+                onFocus={() => {
+                  if (leaf.terminalId) onTerminalFocus(leaf.terminalId);
+                }}
+              />
+            ) : (
+              <BrowserView initialUrl={leaf.url} />
+            )}
+          </PaneFrame>
+        </div>
+      ))}
+
+      {splits.map((split) => (
+        <PaneDivider
+          key={split.id}
+          split={split}
+          containerRef={containerRef}
+          onRatioChange={onRatioChange}
+        />
+      ))}
+    </div>
+  );
+}
+
+function PaneDivider({
+  split,
+  containerRef,
+  onRatioChange,
+}: {
+  split: SplitLayout;
+  containerRef: React.RefObject<HTMLDivElement | null>;
+  onRatioChange?: (splitId: string, ratio: number) => void;
+}) {
+  const horiz = split.direction === "horizontal";
+  const [dragging, setDragging] = useState(false);
+
+  const onDown = (e: React.MouseEvent) => {
+    if (!onRatioChange) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setDragging(true);
+
+    const move = (ev: MouseEvent) => {
+      const el = containerRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
+      const posAbs = horiz
+        ? (ev.clientX - rect.left) / rect.width
+        : (ev.clientY - rect.top) / rect.height;
+      const local = horiz
+        ? (posAbs - split.rect.x) / split.rect.w
+        : (posAbs - split.rect.y) / split.rect.h;
+      onRatioChange(split.id, Math.max(0.15, Math.min(0.85, local)));
+    };
+
+    const up = () => {
+      setDragging(false);
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+    document.body.style.cursor = horiz ? "col-resize" : "row-resize";
+    document.body.style.userSelect = "none";
+  };
+
+  const pos = horiz
+    ? split.rect.x + split.rect.w * split.ratio
+    : split.rect.y + split.rect.h * split.ratio;
+
+  return (
+    <div
+      onMouseDown={onDown}
+      style={{
+        position: "absolute",
+        left: horiz ? `${pos * 100}%` : 0,
+        top: horiz ? 0 : `${pos * 100}%`,
+        width: horiz ? 1 : "100%",
+        height: horiz ? "100%" : 1,
+        marginLeft: horiz ? -0.5 : 0,
+        marginTop: horiz ? 0 : -0.5,
+        background: dragging ? "#3B82F6" : "#2A2A2A",
+        cursor: onRatioChange ? (horiz ? "col-resize" : "row-resize") : "default",
+        zIndex: 20,
+        flexShrink: 0,
+      }}
+    >
+      {/* Invisible wider hit area */}
+      <div
+        style={{
+          position: "absolute",
+          [horiz ? "width" : "height"]: "9px",
+          [horiz ? "left" : "top"]: "-4px",
+          [horiz ? "top" : "left"]: 0,
+          [horiz ? "bottom" : "right"]: 0,
+          [horiz ? "height" : "width"]: "100%",
+          cursor: onRatioChange ? (horiz ? "col-resize" : "row-resize") : "default",
+        }}
+      />
+    </div>
   );
 }
 
@@ -210,68 +316,5 @@ function CloseIcon() {
       <line x1="2" y1="2" x2="8" y2="8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
       <line x1="8" y1="2" x2="2" y2="8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
     </svg>
-  );
-}
-
-function SplitView({ direction, initialRatio, first, second }: {
-  direction: "horizontal" | "vertical";
-  initialRatio: number;
-  first: React.ReactNode;
-  second: React.ReactNode;
-}) {
-  const [ratio, setRatio] = useState(initialRatio);
-  const ref = useRef<HTMLDivElement>(null);
-  const dragging = useRef(false);
-  const horiz = direction === "horizontal";
-
-  const onDown = (e: React.MouseEvent) => {
-    e.preventDefault();
-    dragging.current = true;
-    const move = (e: MouseEvent) => {
-      if (!dragging.current || !ref.current) return;
-      const rect = ref.current.getBoundingClientRect();
-      const pos = horiz ? (e.clientX - rect.left) / rect.width : (e.clientY - rect.top) / rect.height;
-      setRatio(Math.max(0.15, Math.min(0.85, pos)));
-    };
-    const up = () => {
-      dragging.current = false;
-      document.removeEventListener("mousemove", move);
-      document.removeEventListener("mouseup", up);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    };
-    document.addEventListener("mousemove", move);
-    document.addEventListener("mouseup", up);
-    document.body.style.cursor = horiz ? "col-resize" : "row-resize";
-    document.body.style.userSelect = "none";
-  };
-
-  return (
-    <div ref={ref} style={{ display: "flex", flexDirection: horiz ? "row" : "column", width: "100%", height: "100%" }}>
-      <div style={{ [horiz ? "width" : "height"]: `${ratio * 100}%`, overflow: "hidden" }}>{first}</div>
-      <div
-        onMouseDown={onDown}
-        style={{
-          [horiz ? "width" : "height"]: "1px",
-          [horiz ? "minWidth" : "minHeight"]: "1px",
-          background: "#2A2A2A",
-          cursor: horiz ? "col-resize" : "row-resize",
-          flexShrink: 0,
-          position: "relative",
-        }}
-      >
-        {/* Invisible wider hit area */}
-        <div style={{
-          position: "absolute",
-          [horiz ? "width" : "height"]: "9px",
-          [horiz ? "left" : "top"]: "-4px",
-          [horiz ? "top" : "left"]: 0,
-          [horiz ? "bottom" : "right"]: 0,
-          [horiz ? "height" : "width"]: "100%",
-          cursor: horiz ? "col-resize" : "row-resize",
-        }} />
-      </div>
-      <div style={{ [horiz ? "width" : "height"]: `${(1 - ratio) * 100}%`, overflow: "hidden" }}>{second}</div>
-    </div>
   );
 }

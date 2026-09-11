@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 export interface LayoutPreset {
   id: string;
@@ -32,6 +32,25 @@ interface Props {
 
 export default function WorkspacePresets({ visible, onSelect, onClose }: Props) {
   const [name, setName] = useState("");
+
+  // Fresh dialog each time; don't leak the previous workspace's name.
+  useEffect(() => {
+    if (visible) setName("");
+  }, [visible]);
+
+  // Escape closes the dialog even if focus left the name input.
+  useEffect(() => {
+    if (!visible) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () => window.removeEventListener("keydown", onKey, { capture: true });
+  }, [visible, onClose]);
+
   if (!visible) return null;
 
   return (

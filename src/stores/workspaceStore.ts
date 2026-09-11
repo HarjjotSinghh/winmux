@@ -34,6 +34,9 @@ interface WorkspaceStore {
   ) => void;
   openBrowserInSplit: (workspaceId: string, paneId: string, url: string) => void;
   closePane: (workspaceId: string, paneId: string) => string | null;
+  setPaneRatio: (workspaceId: string, splitId: string, ratio: number) => void;
+  /** Replace a pane with a brand new terminal pane (used when a shell exits). */
+  resetPane: (workspaceId: string, paneId: string) => void;
   setSidebarWidth: (width: number) => void;
   toggleSidebar: () => void;
   setGitBranch: (workspaceId: string, branch: string | null) => void;
@@ -190,6 +193,25 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     return null;
   },
 
+  setPaneRatio: (workspaceId, splitId, ratio) => {
+    set((state) => ({
+      workspaces: state.workspaces.map((w) => {
+        if (w.id !== workspaceId) return w;
+        return { ...w, paneTree: setNodeRatio(w.paneTree, splitId, ratio) };
+      }),
+    }));
+  },
+
+  resetPane: (workspaceId, paneId) => {
+    set((state) => ({
+      workspaces: state.workspaces.map((w) => {
+        if (w.id !== workspaceId) return w;
+        const tree = resetNode(w.paneTree, paneId);
+        return tree ? { ...w, paneTree: tree, activeTerminalId: null } : w;
+      }),
+    }));
+  },
+
   setSidebarWidth: (width) => set({ sidebarWidth: width }),
   toggleSidebar: () => set((s) => ({ sidebarVisible: !s.sidebarVisible })),
 
@@ -303,6 +325,45 @@ export function getTerminalIds(node: PaneNode): string[] {
     return [];
   }
   return [...getTerminalIds(node.first), ...getTerminalIds(node.second)];
+}
+
+// First live terminal ID in a pane tree (used to re-target focus after a pane closes)
+export function getFirstTerminalId(node: PaneNode): string | null {
+  if (node.type === "terminal") {
+    return node.terminalId || null;
+  }
+  if (node.type === "browser") {
+    return null;
+  }
+  return getFirstTerminalId(node.first) ?? getFirstTerminalId(node.second);
+}
+
+function setNodeRatio(node: PaneNode, splitId: string, ratio: number): PaneNode {
+  if (node.type === "split") {
+    if (node.id === splitId) {
+      return { ...node, ratio };
+    }
+    const first = setNodeRatio(node.first, splitId, ratio);
+    if (first !== node.first) return { ...node, first };
+    const second = setNodeRatio(node.second, splitId, ratio);
+    if (second !== node.second) return { ...node, second };
+  }
+  return node;
+}
+
+function resetNode(node: PaneNode, paneId: string): PaneNode | null {
+  if (node.type === "terminal" && node.id === paneId) {
+    // New pane id so React mounts a fresh TerminalView (and spawns a fresh
+    // shell), rather than reusing the exited terminal's xterm instance.
+    return { type: "terminal", id: genPaneId(), terminalId: "" };
+  }
+  if (node.type === "split") {
+    const first = resetNode(node.first, paneId);
+    if (first) return { ...node, first };
+    const second = resetNode(node.second, paneId);
+    if (second) return { ...node, second };
+  }
+  return null;
 }
 
 function splitNodeWithBrowser(
