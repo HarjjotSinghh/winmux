@@ -2,9 +2,13 @@ import { useEffect, useState } from "react";
 import type { Notification } from "../../types";
 import { listNotifications, clearNotifications, dismissNotification } from "../../lib/ipc";
 
-interface Props { visible: boolean; onClose: () => void; }
+interface Props {
+  visible: boolean;
+  onClose: () => void;
+  onJump?: (terminalId: string) => void;
+}
 
-export default function NotificationPanel({ visible, onClose }: Props) {
+export default function NotificationPanel({ visible, onClose, onJump }: Props) {
   const [notifs, setNotifs] = useState<Notification[]>([]);
 
   useEffect(() => {
@@ -70,6 +74,7 @@ export default function NotificationPanel({ visible, onClose }: Props) {
               onClick={() => {
                 dismissNotification(n.id);
                 setNotifs((p) => p.map((x) => x.id === n.id ? { ...x, read: true } : x));
+                if (n.terminalId && onJump) onJump(n.terminalId);
               }}
               style={{
                 padding: "10px 12px", marginBottom: "2px", borderRadius: "6px",

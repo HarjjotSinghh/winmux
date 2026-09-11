@@ -3,6 +3,17 @@
 All notable changes to WinMux are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-09-11
+
+### Added — Agent awareness (Pack 1/4)
+
+- **Per-pane notification rings.** Panes whose terminal has unread OSC notifications now show an inset 2 px ring plus a badge (blue for working, amber for needs-input). The ring and badge are driven by a new `agentStore` (`src/stores/agentStore.ts`) and surfaced through `SplitContainer` via `terminalMeta`.
+- **Agent status tracking.** Every OSC notification is classified as `needs_input` vs `working` by a keyword heuristic (`needs`, `waiting`, `prompt`, `question`, `confirm`, `input` → `needs_input`) and stored per terminal. Switching focus to a pane marks it `idle`.
+- **Jump-to-notification.** Clicking a notification in the notification panel now jumps to its workspace/pane, focuses the terminal, clears its unread count and workspace badge, and closes the panel. The panel also exposes an `onJump` callback for reuse.
+- **Keyboard cycling of notifications.** `Ctrl+Shift+N` jumps to the next unread terminal, `Ctrl+Shift+B` to the previous, both wrapping and available from the command palette as _Next/Previous Notification_.
+- **Focus clears unread.** Focusing a terminal clears its per-pane unread and (when applicable) its workspace unread, and marks the agent `idle`.
+- Tests: 5 new `agentStore` unit tests and existing pane-layout/workspace tests still green; full frontend suite 35 tests.
+
 ## [0.4.18] - 2026-09-11
 
 ### Added - splits inherit the working directory
