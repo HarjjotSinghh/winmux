@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { useWorkspaceStore, getFirstTerminalId, getTerminalIds } from "./workspaceStore";
+import {
+  useWorkspaceStore,
+  getFirstTerminalId,
+  getPaneTerminalId,
+  getTerminalIds,
+} from "./workspaceStore";
 import type { PaneNode } from "../types";
 
 function resetStore() {
@@ -143,5 +148,46 @@ describe("workspaceStore pane zoom", () => {
     useWorkspaceStore.getState().closePane(workspaceId, newPaneId);
 
     expect(useWorkspaceStore.getState().workspaces[0].zoomedPaneId).toBeNull();
+  });
+});
+
+describe("workspaceStore split cwd inheritance", () => {
+  beforeEach(resetStore);
+
+  it("split stores the inherited cwd on the new pane only", () => {
+    const { workspaceId, paneId } = workspaceWithTerminal("term-1");
+
+    useWorkspaceStore
+      .getState()
+      .splitPane(workspaceId, paneId, "horizontal", "", "C:\\Projects\\winmux");
+
+    const tree = useWorkspaceStore.getState().workspaces[0].paneTree;
+    if (tree.type !== "split") throw new Error("expected split");
+    if (tree.first.type !== "terminal" || tree.second.type !== "terminal") {
+      throw new Error("expected terminal panes");
+    }
+    expect(tree.second.cwd).toBe("C:\\Projects\\winmux");
+    // The source pane is never rewritten.
+    expect(tree.first.cwd).toBeUndefined();
+  });
+
+  it("split without a cwd leaves the new pane without one", () => {
+    const { workspaceId, paneId } = workspaceWithTerminal("term-1");
+    useWorkspaceStore.getState().splitPane(workspaceId, paneId, "horizontal", "");
+    const tree = useWorkspaceStore.getState().workspaces[0].paneTree;
+    if (tree.type !== "split") throw new Error("expected split");
+    if (tree.second.type !== "terminal") throw new Error("expected terminal");
+    expect(tree.second.cwd).toBeUndefined();
+  });
+
+  it("getPaneTerminalId resolves a pane's live terminal", () => {
+    const { workspaceId, paneId } = workspaceWithTerminal("term-1");
+    useWorkspaceStore.getState().splitPane(workspaceId, paneId, "horizontal", "");
+
+    const tree = useWorkspaceStore.getState().workspaces[0].paneTree;
+    if (tree.type !== "split") throw new Error("expected split");
+    expect(getPaneTerminalId(tree, paneId)).toBe("term-1");
+    expect(getPaneTerminalId(tree, tree.second.id)).toBeNull();
+    expect(getPaneTerminalId(tree, "missing")).toBeNull();
   });
 });

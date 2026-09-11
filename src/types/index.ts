@@ -14,6 +14,8 @@ export type PaneNode =
       type: "terminal";
       id: string;
       terminalId: string;
+      /** Spawn directory for this pane (inherited from the pane it was split from). */
+      cwd?: string;
       restore?: TerminalRestoreData;
     }
   | { type: "browser"; id: string; url: string }
