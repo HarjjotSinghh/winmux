@@ -684,6 +684,18 @@ pub async fn git_run(cwd: String, args: Vec<String>) -> Result<String, String> {
         .map_err(|e| format!("git task failed: {}", e))?
 }
 
+/**
+ * Current branch of the git repo containing `cwd`, or `None` when `cwd`
+ * isn't in a repo / HEAD is detached. Never fails the caller with git's
+ * stderr noise — unresolvable means "no branch to show".
+ */
+#[tauri::command]
+pub async fn git_branch(cwd: String) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || git_branch_blocking(&cwd))
+        .await
+        .map_err(|e| format!("git task failed: {}", e))?
+}
+
 fn git_run_blocking(cwd: &str, args: &[String]) -> Result<String, String> {
     let mut child = std::process::Command::new("git")
         .args(args)
@@ -796,6 +808,45 @@ mod git_tests {
         ] {
             assert!(sanitize_git_args(&args).is_err(), "{:?}", args);
         }
+    }
+}
+
+fn git_branch_blocking(cwd: &str) -> Result<Option<String>, String> {
+    let top = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(cwd)
+        .output()
+        .map_err(|e| format!("failed to spawn git: {}", e))?;
+    if !top.status.success() {
+        return Ok(None);
+    }
+    let out = std::process::Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(cwd)
+        .output()
+        .map_err(|e| format!("failed to spawn git: {}", e))?;
+    if !out.status.success() {
+        return Ok(None);
+    }
+    let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Ok(if branch.is_empty() {
+        None
+    } else {
+        Some(branch)
+    })
+}
+
+#[cfg(test)]
+mod git_branch_tests {
+    use super::git_branch_blocking;
+
+    #[test]
+    fn non_repo_yields_none_without_error() {
+        let dir = std::env::temp_dir();
+        // temp_dir itself is (almost) never a repo root with a branch;
+        // either way the call must not fail.
+        let result = git_branch_blocking(dir.to_str().unwrap_or("C:\\"));
+        assert!(result.is_ok());
     }
 }
 

@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { fuzzyFilter } from "../../lib/fuzzy";
 
 interface Command { id: string; label: string; shortcut?: string; action: () => void; }
 interface Props { visible: boolean; onClose: () => void; commands: Command[]; }
@@ -8,7 +9,10 @@ export default function CommandPalette({ visible, onClose, commands }: Props) {
   const [sel, setSel] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const filtered = commands.filter((c) => c.label.toLowerCase().includes(query.toLowerCase()));
+  const filtered = useMemo(
+    () => fuzzyFilter(query, commands, (c) => c.label),
+    [query, commands]
+  );
 
   useEffect(() => {
     if (visible) { setQuery(""); setSel(0); setTimeout(() => inputRef.current?.focus(), 50); }

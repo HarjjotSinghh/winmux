@@ -259,3 +259,107 @@ describe("applyCwdToTree", () => {
     });
   });
 });
+
+describe("workspaceStore icons, cycling, duplication", () => {
+  beforeEach(resetStore);
+
+  it("sets and clears the workspace icon", () => {
+    const ws = useWorkspaceStore.getState().createWorkspace("test");
+    useWorkspaceStore.getState().setWorkspaceIcon(ws.id, "??");
+    expect(
+      useWorkspaceStore.getState().workspaces.find((w) => w.id === ws.id)?.icon
+    ).toBe("??");
+    useWorkspaceStore.getState().setWorkspaceIcon(ws.id, null);
+    expect(
+      useWorkspaceStore.getState().workspaces.find((w) => w.id === ws.id)?.icon
+    ).toBeNull();
+  });
+
+  it("cycles workspaces with wraparound", () => {
+    const a = useWorkspaceStore.getState().createWorkspace("a");
+    const b = useWorkspaceStore.getState().createWorkspace("b");
+    const c = useWorkspaceStore.getState().createWorkspace("c");
+    const store = () => useWorkspaceStore.getState();
+
+    store().setActiveWorkspace(a.id);
+    store().cycleWorkspace(1);
+    expect(store().activeWorkspaceId).toBe(b.id);
+    store().cycleWorkspace(1);
+    expect(store().activeWorkspaceId).toBe(c.id);
+    store().cycleWorkspace(1);
+    expect(store().activeWorkspaceId).toBe(a.id);
+    store().cycleWorkspace(-1);
+    expect(store().activeWorkspaceId).toBe(c.id);
+  });
+
+  it("cycling a single workspace is a no-op", () => {
+    const a = useWorkspaceStore.getState().createWorkspace("a");
+    useWorkspaceStore.getState().cycleWorkspace(1);
+    expect(useWorkspaceStore.getState().activeWorkspaceId).toBe(a.id);
+  });
+
+  it("duplicates layout with fresh panes and no live sessions", () => {
+    const { workspaceId, paneId } = workspaceWithTerminal("term-1");
+    const store = useWorkspaceStore.getState();
+    store.splitPane(workspaceId, paneId, "horizontal", "", "C:\\repo");
+    store.setWorkspaceIcon(workspaceId, "??");
+
+    const dupe = useWorkspaceStore.getState().duplicateWorkspace(workspaceId);
+    expect(dupe).not.toBeNull();
+    if (!dupe) return;
+    expect(dupe.name).toBe("test copy");
+    expect(dupe.icon).toBe("??");
+    expect(dupe.paneTree.type).toBe("split");
+    if (dupe.paneTree.type !== "split") return;
+
+    // Fresh pane ids, no live terminal ids, cwd preserved.
+    const ids = getTerminalIds(dupe.paneTree);
+    expect(ids).toEqual([]);
+    const orig = useWorkspaceStore
+      .getState()
+      .workspaces.find((w) => w.id === workspaceId)!.paneTree;
+    const collectIds = (n: PaneNode, acc: string[] = []): string[] => {
+      acc.push(n.id);
+      if (n.type === "split") {
+        collectIds(n.first, acc);
+        collectIds(n.second, acc);
+      }
+      return acc;
+    };
+    const origIds = new Set(collectIds(orig));
+    for (const id of collectIds(dupe.paneTree)) {
+      expect(origIds.has(id)).toBe(false);
+    }
+    expect(useWorkspaceStore.getState().activeWorkspaceId).toBe(dupe.id);
+  });
+
+  it("duplicate of a missing workspace returns null", () => {
+    expect(useWorkspaceStore.getState().duplicateWorkspace("nope")).toBeNull();
+  });
+
+  it("duplicate carries per-pane cwd and drops workspace live metadata", () => {
+    const { workspaceId, paneId } = workspaceWithTerminal("term-1");
+    const store = useWorkspaceStore.getState();
+    store.splitPane(workspaceId, paneId, "horizontal", "", "C:\\spawn");
+    // Live cwd (as resolved via getCwd) wins over the stored spawn cwd.
+    const live = new Map([["term-1", "C:\\live"]]);
+
+    const dupe = useWorkspaceStore.getState().duplicateWorkspace(workspaceId, live);
+    expect(dupe).not.toBeNull();
+    if (!dupe) return;
+    if (dupe.paneTree.type !== "split") throw new Error("expected split");
+    const collectCwds = (n: PaneNode, acc: string[] = []): string[] => {
+      if (n.type === "terminal" && n.cwd) acc.push(n.cwd);
+      if (n.type === "split") {
+        collectCwds(n.first, acc);
+        collectCwds(n.second, acc);
+      }
+      return acc;
+    };
+    // First pane had live cwd C:\live, second kept its spawn cwd C:\spawn.
+    expect(collectCwds(dupe.paneTree).sort()).toEqual(["C:\\live", "C:\\spawn"]);
+    // Workspace-level live metadata must not carry over to fresh shells.
+    expect(dupe.cwd).toBeNull();
+    expect(dupe.gitBranch).toBeNull();
+  });
+});

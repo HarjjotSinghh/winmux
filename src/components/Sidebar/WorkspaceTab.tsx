@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import type { Workspace } from "../../types";
 import ColorPicker from "./ColorPicker";
+import IconPicker from "./IconPicker";
 
 interface WorkspaceTabProps {
   workspace: Workspace;
@@ -10,14 +11,18 @@ interface WorkspaceTabProps {
   onClose?: () => void;
   onRename: (name: string) => void;
   onColorChange: (color: string) => void;
+  onIconChange: (icon: string | null) => void;
+  onDuplicate?: () => void;
 }
 
 export default function WorkspaceTab({
   workspace, index, isActive, onClick, onClose, onRename, onColorChange,
+  onIconChange, onDuplicate,
 }: WorkspaceTabProps) {
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(workspace.name);
   const [showColor, setShowColor] = useState(false);
+  const [showIcon, setShowIcon] = useState(false);
   const [hovered, setHovered] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -79,28 +84,58 @@ export default function WorkspaceTab({
         position: "relative",
       }}
     >
-      {/* Accent dot */}
-      <div
-        onClick={(e) => { e.stopPropagation(); setShowColor(!showColor); }}
-        style={{
-          width: "6px",
-          height: "6px",
-          borderRadius: "50%",
-          background: isActive ? workspace.color : "#333",
-          flexShrink: 0,
-          cursor: "pointer",
-          transition: "background 150ms ease",
-          position: "relative",
-        }}
-      >
-        {showColor && (
-          <ColorPicker
-            currentColor={workspace.color}
-            onSelect={onColorChange}
-            onClose={() => setShowColor(false)}
-          />
-        )}
-      </div>
+      {/* Icon or accent dot. Both pickers render at the tab root so each is
+          reachable regardless of which trigger is shown. */}
+      {workspace.icon ? (
+        <button
+          onClick={(e) => { e.stopPropagation(); setShowIcon((v) => !v); setShowColor(false); }}
+          title="Change icon"
+          aria-label={`Change icon for ${workspace.name}`}
+          aria-haspopup="dialog"
+          aria-expanded={showIcon}
+          style={{
+            background: "none",
+            border: "none",
+            padding: 0,
+            fontSize: "15px",
+            lineHeight: 1,
+            flexShrink: 0,
+            cursor: "pointer",
+            filter: isActive ? "none" : "grayscale(60%)",
+            opacity: isActive ? 1 : 0.75,
+          }}
+        >
+          {workspace.icon}
+        </button>
+      ) : (
+        <div
+          onClick={(e) => { e.stopPropagation(); setShowColor(!showColor); }}
+          style={{
+            width: "6px",
+            height: "6px",
+            borderRadius: "50%",
+            background: isActive ? workspace.color : "#333",
+            flexShrink: 0,
+            cursor: "pointer",
+            transition: "background 150ms ease",
+            position: "relative",
+          }}
+        />
+      )}
+      {showIcon && (
+        <IconPicker
+          currentIcon={workspace.icon}
+          onSelect={onIconChange}
+          onClose={() => setShowIcon(false)}
+        />
+      )}
+      {showColor && (
+        <ColorPicker
+          currentColor={workspace.color}
+          onSelect={onColorChange}
+          onClose={() => setShowColor(false)}
+        />
+      )}
 
       {/* Name */}
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -216,6 +251,14 @@ export default function WorkspaceTab({
           <MenuItem onClick={() => { setShowColor(true); setMenu(null); }}>
             Change Color
           </MenuItem>
+          <MenuItem onClick={() => { setShowIcon(true); setMenu(null); }}>
+            Change Icon
+          </MenuItem>
+          {onDuplicate && (
+            <MenuItem onClick={() => { onDuplicate(); setMenu(null); }}>
+              Duplicate Workspace
+            </MenuItem>
+          )}
           {onClose && (
             <>
               <div style={{ height: 1, background: "#2A2A2A", margin: "4px 0" }} />

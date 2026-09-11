@@ -5,6 +5,7 @@ mod daemon_client;
 mod ipc;
 mod notification;
 mod pty;
+mod quake;
 mod session;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -64,6 +65,7 @@ pub fn run() {
                 .level(log::LevelFilter::Info)
                 .build(),
         )
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             log::info!("Second instance launched; surfacing existing window");
             if let Some(window) = app.get_webview_window("main") {
@@ -105,6 +107,8 @@ pub fn run() {
             commands::diag_log,
             commands::ping_daemon,
             commands::git_run,
+            commands::git_branch,
+            quake::toggle_quake,
         ])
         .setup(move |app| {
             let app_handle = app.handle().clone();
@@ -134,11 +138,15 @@ pub fn run() {
             }
 
             // Start the IPC server for CLI communication
+            let app_for_quake = app_handle.clone();
             std::thread::spawn(move || {
                 if let Err(e) = ipc::start_ipc_server(app_handle, pty_mgr) {
                     log::error!("IPC server failed: {}", e);
                 }
             });
+
+            // Quake dropdown hotkey (best-effort; palette entry always works).
+            crate::quake::register_quake_shortcut(&app_for_quake);
 
             // Set up system tray
             let tray_menu = tauri::menu::MenuBuilder::new(app)

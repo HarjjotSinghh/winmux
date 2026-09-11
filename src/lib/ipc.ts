@@ -91,6 +91,20 @@ export async function getTerminalShell(id: string): Promise<string> {
   return invoke<string>("get_terminal_shell", { id });
 }
 
+/** Current git branch for `cwd`, or null outside a repo / on detached HEAD. */
+export async function getGitBranch(cwd: string): Promise<string | null> {
+  try {
+    return await invoke<string | null>("git_branch", { cwd });
+  } catch {
+    return null;
+  }
+}
+
+/** Quake dropdown: hide when focused, otherwise show and focus. */
+export async function toggleQuake(): Promise<void> {
+  return invoke("toggle_quake");
+}
+
 // ── System Notifications ──────────────────────────────────────
 
 export async function initNotifications(): Promise<void> {

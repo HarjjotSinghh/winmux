@@ -27,6 +27,8 @@ pub struct WindowState {
 pub struct WorkspaceData {
     pub name: String,
     pub color: Option<String>,
+    #[serde(default)]
+    pub icon: Option<String>,
     pub pane_tree: PaneData,
 }
 
@@ -94,6 +96,7 @@ impl Default for SessionData {
             workspaces: vec![WorkspaceData {
                 name: "Workspace 1".to_string(),
                 color: None,
+                icon: None,
                 pane_tree: PaneData::Terminal {
                     cwd: dirs::home_dir()
                         .unwrap_or_else(|| PathBuf::from("C:\\"))
