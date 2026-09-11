@@ -34,6 +34,8 @@ export interface Workspace {
   id: string;
   name: string;
   color: string;
+  /** Optional emoji icon shown in the sidebar; null = accent dot. */
+  icon: string | null;
   paneTree: PaneNode;
   activeTerminalId: string | null;
   /** Pane rendered full-bleed on top of the workspace (Ctrl+Shift+Z). */
@@ -106,6 +108,7 @@ export interface SessionData {
 export interface WorkspaceData {
   name: string;
   color: string | null;
+  icon: string | null;
   paneTree: PaneNodeData;
 }
 

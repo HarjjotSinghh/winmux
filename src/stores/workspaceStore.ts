@@ -24,6 +24,11 @@ interface WorkspaceStore {
   setActiveWorkspace: (id: string) => void;
   renameWorkspace: (id: string, name: string) => void;
   setWorkspaceColor: (id: string, color: string) => void;
+  setWorkspaceIcon: (id: string, icon: string | null) => void;
+  /** Move the active workspace forward/backward with wraparound (Ctrl+Tab). */
+  cycleWorkspace: (direction: 1 | -1) => void;
+  /** Deep-copy a workspace's layout with fresh panes (no live sessions). */
+  duplicateWorkspace: (id: string) => Workspace | null;
   setActiveTerminal: (workspaceId: string, terminalId: string) => void;
   updatePaneTree: (workspaceId: string, tree: PaneNode) => void;
   splitPane: (
@@ -64,6 +69,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
       id,
       name: name || `Workspace ${index + 1}`,
       color: getWorkspaceColor(index),
+      icon: null,
       paneTree: {
         type: "terminal",
         id: terminalPaneId,
@@ -92,6 +98,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
       id,
       name: name || `Workspace ${index + 1}`,
       color: getWorkspaceColor(index),
+      icon: null,
       paneTree: tree,
       activeTerminalId: null,
       zoomedPaneId: null,
@@ -138,6 +145,44 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         w.id === id ? { ...w, color } : w
       ),
     }));
+  },
+
+  setWorkspaceIcon: (id, icon) => {
+    set((state) => ({
+      workspaces: state.workspaces.map((w) =>
+        w.id === id ? { ...w, icon } : w
+      ),
+    }));
+  },
+
+  cycleWorkspace: (direction) => {
+    set((state) => {
+      const { workspaces, activeWorkspaceId } = state;
+      if (workspaces.length < 2) return {};
+      const idx = workspaces.findIndex((w) => w.id === activeWorkspaceId);
+      const next =
+        workspaces[(idx + direction + workspaces.length) % workspaces.length];
+      return { activeWorkspaceId: next.id };
+    });
+  },
+
+  duplicateWorkspace: (id) => {
+    const ws = get().workspaces.find((w) => w.id === id);
+    if (!ws) return null;
+    const dupe: Workspace = {
+      ...ws,
+      id: genId(),
+      name: `${ws.name} copy`,
+      paneTree: cloneTreeFresh(ws.paneTree),
+      activeTerminalId: null,
+      zoomedPaneId: null,
+      unreadCount: 0,
+    };
+    set((state) => ({
+      workspaces: [...state.workspaces, dupe],
+      activeWorkspaceId: dupe.id,
+    }));
+    return dupe;
   },
 
   setActiveTerminal: (workspaceId, terminalId) => {
@@ -295,6 +340,33 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
 }));
 
 // ── Tree Helpers ──────────────────────────────────────────────────
+
+/**
+ * Deep-copy a pane tree for duplication: fresh pane ids (so React mounts new
+ * terminals), empty terminalIds (fresh shells, spawned on mount), cwd kept
+ * so the duplicate starts in the same directory.
+ */
+export function cloneTreeFresh(node: PaneNode): PaneNode {
+  if (node.type === "terminal") {
+    return {
+      type: "terminal",
+      id: genPaneId(),
+      terminalId: "",
+      ...(node.cwd ? { cwd: node.cwd } : {}),
+    };
+  }
+  if (node.type === "browser") {
+    return { type: "browser", id: genPaneId(), url: node.url };
+  }
+  return {
+    type: "split",
+    id: genPaneId(),
+    direction: node.direction,
+    ratio: node.ratio,
+    first: cloneTreeFresh(node.first),
+    second: cloneTreeFresh(node.second),
+  };
+}
 
 function splitNode(
   node: PaneNode,

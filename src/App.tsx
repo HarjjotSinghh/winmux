@@ -20,7 +20,7 @@ import { setBroadcastTargetsProvider } from "./lib/broadcast";
 import { clampFontSize, DEFAULT_FONT_SIZE } from "./lib/font";
 import { useSettingsStore } from "./stores/settingsStore";
 import { useAgentStore } from "./stores/agentStore";
-import { closeTerminal, saveSession, loadSession, initNotifications, showSystemNotification, writeTerminal, getCwd, getTerminalShell, getScrollback, openDevtools, diagLog, gitToplevel, gitWorktreeAdd } from "./lib/ipc";
+import { closeTerminal, saveSession, loadSession, initNotifications, showSystemNotification, writeTerminal, getCwd, getTerminalShell, getScrollback, openDevtools, diagLog, gitToplevel, gitWorktreeAdd, getGitBranch, toggleQuake } from "./lib/ipc";
 import { branchFromPath } from "./lib/worktree";
 import type { SessionData, PaneNode, PaneNodeData } from "./types";
 
@@ -45,6 +45,8 @@ export default function App() {
     activeWorkspaceId,
     createWorkspace,
     createWorkspaceWithTree,
+    setWorkspaceColor,
+    setWorkspaceIcon,
     setActiveWorkspace,
     setActiveTerminal,
     updatePaneTree,
@@ -135,7 +137,10 @@ export default function App() {
       if (data && data.workspaces.length > 0) {
         const savedAt = Date.now();
         data.workspaces.forEach((ws) => {
-          createWorkspaceWithTree(ws.name, restorePaneTree(ws.paneTree, savedAt));
+          const created = createWorkspaceWithTree(ws.name, restorePaneTree(ws.paneTree, savedAt));
+          // createWorkspaceWithTree assigns defaults — restore saved styling.
+          if (ws.color) setWorkspaceColor(created.id, ws.color);
+          if (ws.icon) setWorkspaceIcon(created.id, ws.icon);
         });
       } else {
         createWorkspace();
@@ -143,7 +148,7 @@ export default function App() {
     }).catch(() => {
       createWorkspace();
     });
-  }, [loadSettings, createWorkspace, createWorkspaceWithTree]);
+  }, [loadSettings, createWorkspace, createWorkspaceWithTree, setWorkspaceColor, setWorkspaceIcon]);
 
   // ── Auto-save session ──────────────────────────────────────────
   // Light saves (structure + cwd) every 5s; heavy save (with scrollback)
@@ -163,6 +168,7 @@ export default function App() {
           workspaces.map(async (ws) => ({
             name: ws.name,
             color: ws.color,
+            icon: ws.icon ?? null,
             paneTree: await serializePaneTree(ws.paneTree, includeScrollback),
           }))
         );
@@ -323,6 +329,33 @@ export default function App() {
     return () => { unlisten.then((fn) => fn()); };
   }, [workspaces, activeWorkspaceId, incrementUnread]);
 
+  // Sync the active workspace's cwd + git branch from the focused terminal.
+  // Runs on focus/workspace switches only (not on a timer) so a busy
+  // machine never gets invoke storms; each step no-ops when unchanged.
+  useEffect(() => {
+    const ws = workspaces.find((w) => w.id === activeWorkspaceId);
+    const tid = ws?.activeTerminalId;
+    if (!ws || !tid) return;
+    let cancelled = false;
+    (async () => {
+      const cwd = await getCwd(tid).catch(() => "");
+      if (cancelled || !cwd) return;
+      const store = useWorkspaceStore.getState();
+      if (store.workspaces.find((w) => w.id === ws.id)?.cwd !== cwd) {
+        store.setCwd(ws.id, cwd);
+      }
+      const branch = await getGitBranch(cwd);
+      if (cancelled) return;
+      if (store.workspaces.find((w) => w.id === ws.id)?.gitBranch !== (branch ?? null)) {
+        store.setGitBranch(ws.id, branch);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeWorkspaceId, activeWorkspace?.activeTerminalId]);
+
   // Clear per-pane notification when the user focuses that terminal
   useEffect(() => {
     const tid = activeWorkspace?.activeTerminalId;
@@ -402,6 +435,19 @@ export default function App() {
     store.removeWorkspace(workspaceId);
     const agentStore = useAgentStore.getState();
     ids.forEach((id) => agentStore.clearForTerminal(id));
+  }, []);
+
+  /** Duplicate a workspace's layout with fresh shells (palette + tab menu). */
+  const handleDuplicateWorkspace = useCallback((workspaceId?: string) => {
+    const store = useWorkspaceStore.getState();
+    const id = workspaceId ?? store.activeWorkspaceId;
+    if (!id) return;
+    store.duplicateWorkspace(id);
+  }, []);
+
+  /** Cycle workspaces forward/backward with wraparound (Ctrl+Tab). */
+  const handleCycleWorkspace = useCallback((direction: 1 | -1) => {
+    useWorkspaceStore.getState().cycleWorkspace(direction);
   }, []);
 
   const handleCloseActivePane = useCallback(() => {
@@ -683,6 +729,12 @@ export default function App() {
         // NOTE: Ctrl+Shift+G (broadcast) and Ctrl+Shift+U (worktree) are
         // handled in the capture-phase listener above — by the time a bubble
         // handler runs, xterm has already forwarded them to the shell.
+      } else if (e.ctrlKey && e.key === "Tab") {
+        // Ctrl+Tab / Ctrl+Shift+Tab — cycle workspaces (also in xterm's face,
+        // so stop it here first).
+        e.preventDefault();
+        e.stopPropagation();
+        handleCycleWorkspace(e.shiftKey ? -1 : 1);
       } else if (e.ctrlKey && !e.shiftKey && e.key >= "1" && e.key <= "9") {
         const index = parseInt(e.key) - 1;
         if (index < workspaces.length) {
@@ -694,7 +746,7 @@ export default function App() {
 
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [workspaces, setActiveWorkspace, toggleSidebar, handleSplit, handleCloseActivePane, handleOpenBrowser, handleToggleZoom, zoomFont, resetFont, handleNextNotification, handlePrevNotification]);
+  }, [workspaces, setActiveWorkspace, toggleSidebar, handleSplit, handleCloseActivePane, handleOpenBrowser, handleToggleZoom, zoomFont, resetFont, handleNextNotification, handlePrevNotification, handleCycleWorkspace]);
 
   const commands = useMemo(
     () => [
@@ -723,6 +775,10 @@ export default function App() {
       { id: "openBrowser", label: "Open Browser in Split", shortcut: "Ctrl+Shift+L", action: handleOpenBrowser },
       { id: "toggleBroadcast", label: "Toggle Broadcast Input", shortcut: "Ctrl+Shift+G", action: handleToggleBroadcast },
       { id: "worktreeWorkspace", label: "New Workspace from Git Worktree…", shortcut: "Ctrl+Shift+U", action: () => { void handleOpenWorktreeDialog(); } },
+      { id: "nextWorkspace", label: "Next Workspace", shortcut: "Ctrl+Tab", action: () => handleCycleWorkspace(1) },
+      { id: "prevWorkspace", label: "Previous Workspace", shortcut: "Ctrl+Shift+Tab", action: () => handleCycleWorkspace(-1) },
+      { id: "duplicateWorkspace", label: "Duplicate Active Workspace", shortcut: undefined, action: () => handleDuplicateWorkspace() },
+      { id: "quakeWindow", label: "Toggle Quake Window", shortcut: "Ctrl+Shift+Space", action: () => { toggleQuake().catch(console.error); } },
       { id: "testNotification", label: "Send Test Notification", action: () => showSystemNotification("WinMux", "Notifications are working!") },
       ...workspaces.map((w, i) => ({
         id: `workspace-${w.id}`,
@@ -731,7 +787,7 @@ export default function App() {
         action: () => setActiveWorkspace(w.id),
       })),
     ],
-    [workspaces, handleSplit, handleFocusDirection, handleToggleZoom, zoomFont, resetFont, toggleSidebar, setActiveWorkspace, handleNextNotification, handlePrevNotification, handleToggleBroadcast, handleNewWorkspace]
+    [workspaces, handleSplit, handleFocusDirection, handleToggleZoom, zoomFont, resetFont, toggleSidebar, setActiveWorkspace, handleNextNotification, handlePrevNotification, handleToggleBroadcast, handleNewWorkspace, handleCycleWorkspace, handleDuplicateWorkspace]
   );
 
   return (
@@ -753,6 +809,7 @@ export default function App() {
           <Sidebar
             onNewWorkspace={() => setPresetPickerVisible(true)}
             onCloseWorkspace={handleCloseWorkspace}
+            onDuplicateWorkspace={(id) => handleDuplicateWorkspace(id)}
           />
         )}
 

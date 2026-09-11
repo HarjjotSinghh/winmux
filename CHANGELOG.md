@@ -3,6 +3,28 @@
 All notable changes to WinMux are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-09-11
+
+### Added — Workspace & window UX (Pack 3/4)
+
+- **Ctrl+Tab / Ctrl+Shift+Tab cycles workspaces** with wraparound, plus
+  palette entries. Stops the event so xterm never sees the chord.
+- **Workspace icons.** Optional emoji per workspace via a picker popover or
+  the tab context menu; persisted across restarts. Saved colors are now
+  restored too (previously dropped on reload).
+- **Duplicate workspace** from the palette or tab menu: deep-copies the
+  layout with fresh panes and shells, keeping each pane's cwd.
+- **Fuzzy command palette.** Subsequence matching ranked by start-of-word,
+  consecutiveness, and label length instead of substring filtering.
+- **Quake dropdown.** Global `Ctrl+Shift+Space` hotkey (registered from Rust
+  at startup, best-effort) hides a focused window or shows and focuses it;
+  the same toggle lives in the command palette.
+- **Git branch in the sidebar.** The focused terminal's live cwd and branch
+  (via a narrow `git_branch` command) sync on focus/workspace switches —
+  no polling, guarded against redundant writes.
+- Tests: cycle/duplicate/icon store tests, fuzzy matcher tests,
+  `quake_should_show` and `git_branch` Rust tests.
+
 ## [0.6.0] - 2026-09-11
 
 ### Added — Orchestration (Pack 2/4)
@@ -16,7 +38,8 @@ All notable changes to WinMux are documented here. This project follows
   prefilled from the active terminal's git toplevel) runs `git worktree add
   -b <branch>` via a new allowlisted `git_run` Tauri command, then opens a
   workspace rooted at the new worktree. Branch names are validated, locations
-  auto-suggested as `<repo>/.worktrees/<slug>`, and git errors surface inline.
+  default to a sibling folder (`<repo>-<slug>`, never inside the checkout),
+  and git errors surface inline.
 - **Agent presets.** The workspace picker gains an Agents section (Claude
   pair, Agent + shell, Agent grid, Server + agent); each terminal pane boots
   its command ~600 ms after the shell reports ready. The same presets are in

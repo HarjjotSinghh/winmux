@@ -5,15 +5,17 @@ interface SidebarProps {
   onNewWorkspace: () => void;
   /** Closes the workspace AND kills the PTY sessions it owns. */
   onCloseWorkspace: (workspaceId: string) => void;
+  onDuplicateWorkspace: (workspaceId: string) => void;
 }
 
-export default function Sidebar({ onNewWorkspace, onCloseWorkspace }: SidebarProps) {
+export default function Sidebar({ onNewWorkspace, onCloseWorkspace, onDuplicateWorkspace }: SidebarProps) {
   const {
     workspaces,
     activeWorkspaceId,
     setActiveWorkspace,
     renameWorkspace,
     setWorkspaceColor,
+    setWorkspaceIcon,
     sidebarWidth,
     sidebarVisible,
   } = useWorkspaceStore();
@@ -87,6 +89,8 @@ export default function Sidebar({ onNewWorkspace, onCloseWorkspace }: SidebarPro
             onClose={workspaces.length > 1 ? () => onCloseWorkspace(ws.id) : undefined}
             onRename={(name) => renameWorkspace(ws.id, name)}
             onColorChange={(color) => setWorkspaceColor(ws.id, color)}
+            onIconChange={(icon) => setWorkspaceIcon(ws.id, icon)}
+            onDuplicate={() => onDuplicateWorkspace(ws.id)}
           />
         ))}
       </div>
