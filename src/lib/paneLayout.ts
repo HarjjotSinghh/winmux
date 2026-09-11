@@ -26,8 +26,11 @@ export interface SplitLayout {
   rect: PaneRect;
 }
 
+export type PaneDirection = "left" | "right" | "up" | "down";
+
 const MIN_RATIO = 0.05;
 const MAX_RATIO = 0.95;
+const EPS = 1e-6;
 
 function clampRatio(ratio: number): number {
   if (!Number.isFinite(ratio)) return 0.5;
@@ -95,4 +98,78 @@ export function computeLayout(tree: PaneNode): {
 
   walk(tree, { x: 0, y: 0, w: 1, h: 1 });
   return { leaves, splits };
+}
+
+/**
+ * The terminal pane nearest to `fromPaneId` in `direction` (tmux/Windows
+ * Terminal-style Alt+Arrow navigation). Based on the rendered geometry, so it
+ * never disagrees with what the user sees.
+ *
+ * Ranking: panes sharing an edge (overlap > 0) win; among those, the largest
+ * perpendicular overlap; ties break on the shortest travel distance. If no
+ * pane shares an edge, the nearest one in that direction still wins (covers
+ * diagonal layouts). Browser panes are skipped — they have no terminal focus.
+ */
+export function findPaneInDirection(
+  tree: PaneNode,
+  fromPaneId: string,
+  direction: PaneDirection
+): LeafNode | null {
+  const { leaves } = computeLayout(tree);
+  const active = leaves.find((l) => l.node.id === fromPaneId);
+  if (!active) return null;
+  const a = active.rect;
+
+  const isCandidate = (r: PaneRect): boolean => {
+    switch (direction) {
+      case "right":
+        return r.x >= a.x + a.w - EPS;
+      case "left":
+        return r.x + r.w <= a.x + EPS;
+      case "down":
+        return r.y >= a.y + a.h - EPS;
+      case "up":
+        return r.y + r.h <= a.y + EPS;
+    }
+  };
+
+  const overlap = (r: PaneRect): number => {
+    if (direction === "left" || direction === "right") {
+      return Math.max(0, Math.min(a.y + a.h, r.y + r.h) - Math.max(a.y, r.y));
+    }
+    return Math.max(0, Math.min(a.x + a.w, r.x + r.w) - Math.max(a.x, r.x));
+  };
+
+  const distance = (r: PaneRect): number => {
+    switch (direction) {
+      case "right":
+        return r.x - (a.x + a.w);
+      case "left":
+        return a.x - (r.x + r.w);
+      case "down":
+        return r.y - (a.y + a.h);
+      case "up":
+        return a.y - (r.y + r.h);
+    }
+  };
+
+  const candidates = leaves.filter(
+    (l) =>
+      l.node.id !== fromPaneId &&
+      l.node.type === "terminal" &&
+      isCandidate(l.rect)
+  );
+  if (candidates.length === 0) return null;
+
+  candidates.sort((p, q) => {
+    const ovP = overlap(p.rect);
+    const ovQ = overlap(q.rect);
+    const hasP = ovP > EPS ? 1 : 0;
+    const hasQ = ovQ > EPS ? 1 : 0;
+    if (hasP !== hasQ) return hasQ - hasP;
+    if (Math.abs(ovP - ovQ) > EPS) return ovQ - ovP;
+    return Math.max(0, distance(p.rect)) - Math.max(0, distance(q.rect));
+  });
+
+  return candidates[0].node;
 }

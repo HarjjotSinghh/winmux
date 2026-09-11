@@ -3,6 +3,22 @@
 All notable changes to WinMux are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.14] - 2026-09-11
+
+### Added - keyboard pane navigation
+
+- **Alt+Arrow moves focus between panes.** The target is the nearest pane in
+  that direction, computed from the rendered geometry
+  (`findPaneInDirection` in `src/lib/paneLayout.ts`) so navigation always
+  matches what is on screen. Panes sharing an edge win over diagonal ones;
+  browser panes are skipped. The handler runs in the capture phase so xterm
+  never forwards the chord to the shell.
+- **Active-pane focus ring.** When a workspace has more than one pane, the
+  focused pane carries a subtle blue inset ring.
+- **Command palette entries** for Focus Pane Left / Right / Up / Down.
+- 7 new geometry tests: splits both axes, 2x2 grid, three columns, edge-over-
+  diagonal preference, browser panes, unknown source pane.
+
 ## [0.4.13] - 2026-09-11
 
 ### Fixed - the real root causes behind "splitting resets my terminals"
