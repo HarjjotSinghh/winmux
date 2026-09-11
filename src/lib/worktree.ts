@@ -14,11 +14,23 @@ export function slugifyBranchName(branch: string): string {
   return slug || "worktree";
 }
 
-/** Default `git worktree add` location: `<repo>/.worktrees/<slug>`. */
+/**
+ * Default `git worktree add` location: a *sibling* of the repo
+ * (`<parent>/<repo>-<slug>`), never inside it. Nesting worktrees under the
+ * main checkout makes `git status` report `?? .worktrees/` and a routine
+ * `git add .` can stage the nested checkout as an embedded-repository entry.
+ */
 export function defaultWorktreePath(repo: string, branch: string): string {
   const sep = repo.includes("/") && !repo.includes("\\") ? "/" : "\\";
   const clean = repo.replace(/[\\/]+$/, "");
-  return `${clean}${sep}.worktrees${sep}${slugifyBranchName(branch)}`;
+  const lastSep = Math.max(clean.lastIndexOf("/"), clean.lastIndexOf("\\"));
+  if (lastSep <= 0) {
+    // Drive root or bare name — no parent to sibling into.
+    return `${clean}${sep}${slugifyBranchName(branch)}`;
+  }
+  const parent = clean.slice(0, lastSep);
+  const base = clean.slice(lastSep + 1);
+  return `${parent}${sep}${base}-${slugifyBranchName(branch)}`;
 }
 
 /** Workspace name suggestion from a worktree path (last segment). */

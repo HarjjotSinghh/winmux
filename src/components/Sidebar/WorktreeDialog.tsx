@@ -73,9 +73,15 @@ export default function WorktreeDialog({ visible, defaultRepo, onSubmit, onClose
     }
   };
 
+  // While git is running, closing would orphan the operation: the workspace
+  // still gets created when the call resolves, after the user cancelled.
+  const closeGuarded = () => {
+    if (!busy) onClose();
+  };
+
   return (
     <div
-      onClick={onClose}
+      onClick={closeGuarded}
       style={{
         position: "absolute",
         inset: 0,
@@ -113,7 +119,7 @@ export default function WorktreeDialog({ visible, defaultRepo, onSubmit, onClose
             New Workspace from Git Worktree
           </span>
           <button
-            onClick={onClose}
+            onClick={closeGuarded}
             aria-label="Close"
             style={{
               background: "none",
@@ -144,7 +150,7 @@ export default function WorktreeDialog({ visible, defaultRepo, onSubmit, onClose
             placeholder="feature/my-branch"
             onKeyDown={(e) => {
               if (e.key === "Enter") submit();
-              if (e.key === "Escape") onClose();
+              if (e.key === "Escape") closeGuarded();
             }}
             style={{
               ...inputStyle,
@@ -154,6 +160,10 @@ export default function WorktreeDialog({ visible, defaultRepo, onSubmit, onClose
           />
 
           <label style={labelStyle}>Worktree location</label>
+          <div style={{ fontSize: 10, color: "#525252", margin: "-2px 0 4px" }}>
+            Suggested next to the repo — never inside it, so it can't be
+            accidentally committed.
+          </div>
           <input
             value={location}
             onChange={(e) => {
@@ -163,7 +173,7 @@ export default function WorktreeDialog({ visible, defaultRepo, onSubmit, onClose
             placeholder="auto-suggested from branch"
             onKeyDown={(e) => {
               if (e.key === "Enter") submit();
-              if (e.key === "Escape") onClose();
+              if (e.key === "Escape") closeGuarded();
             }}
             style={inputStyle}
           />
@@ -195,14 +205,15 @@ export default function WorktreeDialog({ visible, defaultRepo, onSubmit, onClose
             }}
           >
             <button
-              onClick={onClose}
+              onClick={closeGuarded}
+              disabled={busy}
               style={{
                 padding: "7px 14px",
                 background: "transparent",
                 border: "1px solid #2A2A2A",
                 borderRadius: 5,
-                color: "#A3A3A3",
-                cursor: "pointer",
+                color: busy ? "#525252" : "#A3A3A3",
+                cursor: busy ? "default" : "pointer",
                 fontSize: 12,
               }}
             >

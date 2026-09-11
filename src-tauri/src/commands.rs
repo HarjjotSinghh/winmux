@@ -609,97 +609,192 @@ pub fn diag_log(level: String, msg: String) {
 
 // ── Git Commands ───────────────────────────────────────────────
 
-/// Git subcommands the UI may run. Deliberately narrow: read-only plumbing
-/// plus `worktree add/list/prune`. No push/fetch/remote, no shell
-/// passthrough — the UI can never ask for an arbitrary command line.
-const GIT_ALLOWED_SUBCOMMANDS: &[&str] = &["rev-parse", "worktree", "status", "branch", "rev-list"];
+/// Hard wall-clock cap for any git child: `Command::output()` blocks with no
+/// timeout primitive, and a wedged child must never stall a Tauri worker.
+const GIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// `git worktree` verbs the UI may run.
-const GIT_WORKTREE_ALLOWED_VERBS: &[&str] = &["add", "list", "prune"];
+/// Branch names arrive as user input (dialog) — apply the same rules as the
+/// UI validator so a hostile string can't become a ref update.
+fn is_plausible_branch(branch: &str) -> bool {
+    let b = branch.trim();
+    !b.is_empty()
+        && b.len() <= 255
+        && !b.chars().any(|c| c.is_whitespace())
+        && !b.starts_with('-')
+        && !b.contains("..")
+        && !b
+            .chars()
+            .any(|c| matches!(c, '~' | '^' | ':' | '?' | '*' | '[' | '\\'))
+}
 
-fn git_args_allowed(args: &[String]) -> Result<(), String> {
-    let sub = args.first().map(|s| s.as_str()).unwrap_or("");
-    if !GIT_ALLOWED_SUBCOMMANDS.contains(&sub) {
-        return Err(format!("git: subcommand not allowed: {:?}", sub));
-    }
-    if sub == "worktree" {
-        let verb = args.get(1).map(|s| s.as_str()).unwrap_or("");
-        if !GIT_WORKTREE_ALLOWED_VERBS.contains(&verb) {
-            return Err(format!("git worktree: verb not allowed: {:?}", verb));
+/// Paths must be real paths, never something git parses as a flag.
+fn is_safe_path(path: &str) -> bool {
+    !path.trim().is_empty() && !path.trim_start().starts_with('-')
+}
+
+/// Validate the FULL argv and return the exact argv to execute (normalizing
+/// `--` before user-supplied paths). Anything not matching a known-safe shape
+/// is rejected — validating only the subcommand would let flags like
+/// `branch -D` slip through.
+fn sanitize_git_args(args: &[String]) -> Result<Vec<String>, String> {
+    let argv: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let err = || Err(format!("git: arguments not allowed: {:?}", args));
+    match argv.as_slice() {
+        ["rev-parse", "--show-toplevel"] => Ok(args.to_vec()),
+        ["branch", "--show-current"] => Ok(args.to_vec()),
+        ["worktree", "list"] | ["worktree", "prune"] => Ok(args.to_vec()),
+        ["worktree", "add", path] | ["worktree", "add", "--", path] => {
+            if !is_safe_path(path) {
+                return Err(format!("git: unsafe worktree path: {:?}", path));
+            }
+            Ok(vec![
+                "worktree".to_string(),
+                "add".to_string(),
+                "--".to_string(),
+                path.to_string(),
+            ])
         }
+        ["worktree", "add", "-b", branch, path] | ["worktree", "add", "-b", branch, "--", path] => {
+            if !is_plausible_branch(branch) {
+                return Err(format!("git: unsafe branch name: {:?}", branch));
+            }
+            if !is_safe_path(path) {
+                return Err(format!("git: unsafe worktree path: {:?}", path));
+            }
+            Ok(vec![
+                "worktree".to_string(),
+                "add".to_string(),
+                "-b".to_string(),
+                branch.to_string(),
+                "--".to_string(),
+                path.to_string(),
+            ])
+        }
+        _ => err(),
     }
-    Ok(())
 }
 
 /// Run an allowlisted git command in `cwd`, returning trimmed stdout.
-/// Runs on the blocking pool (never the UI/main thread); git calls are local
-/// and fast, but a wedged child must not be able to stall the runtime.
+/// Runs on the blocking pool (never the UI/main thread).
 #[tauri::command]
 pub async fn git_run(cwd: String, args: Vec<String>) -> Result<String, String> {
-    git_args_allowed(&args)?;
-    tauri::async_runtime::spawn_blocking(move || git_run_blocking(&cwd, &args))
+    let argv = sanitize_git_args(&args)?;
+    tauri::async_runtime::spawn_blocking(move || git_run_blocking(&cwd, &argv))
         .await
         .map_err(|e| format!("git task failed: {}", e))?
 }
 
 fn git_run_blocking(cwd: &str, args: &[String]) -> Result<String, String> {
-    let output = std::process::Command::new("git")
+    let mut child = std::process::Command::new("git")
         .args(args)
         .current_dir(cwd)
-        .output()
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        // Never let git prompt for credentials — fail fast instead of hanging.
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .spawn()
         .map_err(|e| format!("failed to spawn git: {}", e))?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        Err(stderr
-            .lines()
-            .next()
-            .filter(|l| !l.is_empty())
-            .map(|l| l.to_string())
-            .unwrap_or_else(|| format!("git {} failed", args.join(" "))))
+
+    // `wait_with_output` has no timeout, so poll and kill on expiry.
+    let start = std::time::Instant::now();
+    loop {
+        match child
+            .try_wait()
+            .map_err(|e| format!("git wait failed: {}", e))?
+        {
+            Some(_) => break,
+            None if start.elapsed() > GIT_TIMEOUT => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("git timed out after 30s".to_string());
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(50)),
+        }
     }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("git output failed: {}", e))?;
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
+    }
+    // Return the FULL diagnostic, not just the first line: git prints a
+    // progress line ("Preparing worktree ...") before the real `fatal:`
+    // cause, and truncating to line one hides the actionable error.
+    let stderr: String = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if stderr.is_empty() {
+        return Err(format!("git {} failed", args.join(" ")));
+    }
+    const MAX_ERR: usize = 2000;
+    if stderr.chars().count() > MAX_ERR {
+        let truncated: String = stderr.chars().take(MAX_ERR).collect();
+        return Err(format!("{}…", truncated));
+    }
+    Err(stderr)
 }
 
 #[cfg(test)]
 mod git_tests {
-    use super::git_args_allowed;
+    use super::sanitize_git_args;
 
     fn sv(args: &[&str]) -> Vec<String> {
         args.iter().map(|s| s.to_string()).collect()
     }
 
     #[test]
-    fn allows_readonly_plumbing() {
+    fn allows_exact_safe_shapes() {
         for args in [
-            sv(&["rev-parse"]),
-            sv(&["status"]),
-            sv(&["branch"]),
-            sv(&["rev-list"]),
+            sv(&["rev-parse", "--show-toplevel"]),
+            sv(&["branch", "--show-current"]),
             sv(&["worktree", "list"]),
             sv(&["worktree", "prune"]),
+            sv(&["worktree", "add", "C:\\w\\x"]),
+            sv(&["worktree", "add", "-b", "feat-x", "C:\\w\\x"]),
+            // Callers may already separate options from paths.
+            sv(&["worktree", "add", "--", "C:\\w\\x"]),
+            sv(&["worktree", "add", "-b", "feat-x", "--", "C:\\w\\x"]),
         ] {
-            assert!(git_args_allowed(&args).is_ok(), "{:?}", args);
+            assert!(sanitize_git_args(&args).is_ok(), "{:?}", args);
         }
     }
 
     #[test]
-    fn rejects_everything_else() {
+    fn normalized_argv_separates_paths() {
+        let out = sanitize_git_args(&sv(&["worktree", "add", "-b", "feat-x", "C:\\w\\x"]))
+            .expect("allowed");
+        assert_eq!(
+            out,
+            vec!["worktree", "add", "-b", "feat-x", "--", "C:\\w\\x"]
+        );
+    }
+
+    #[test]
+    fn rejects_destructive_and_malformed_shapes() {
         for args in [
             Vec::<String>::new(),
             sv(&["push"]),
             sv(&["fetch"]),
             sv(&["pull"]),
             sv(&["checkout"]),
+            sv(&["status"]),
+            sv(&["rev-list"]),
+            sv(&["rev-parse"]),
+            sv(&["rev-parse", "--show-toplevel", "extra"]),
+            sv(&["branch"]),
+            sv(&["branch", "-D", "topic"]),
+            sv(&["branch", "-M", "topic"]),
+            sv(&["branch", "-f", "topic"]),
             sv(&["worktree"]),
             sv(&["worktree", "remove"]),
             sv(&["worktree", "move"]),
-            // NOTE: extra args to an allowed subcommand (e.g. `rev-parse ; rm`)
-            // are safe by construction — we spawn `git` directly with an argv
-            // vector, never through a shell, so `;` is just a literal arg git
-            // rejects. Only the subcommand/verb gate matters.
+            sv(&["worktree", "add"]),
+            sv(&["worktree", "add", "-h"]),
+            sv(&["worktree", "add", "-b", "has space", "C:\\w\\x"]),
+            sv(&["worktree", "add", "-b", "-x", "C:\\w\\x"]),
+            sv(&["worktree", "add", "-b", "a..b", "C:\\w\\x"]),
         ] {
-            assert!(git_args_allowed(&args).is_err(), "{:?}", args);
+            assert!(sanitize_git_args(&args).is_err(), "{:?}", args);
         }
     }
 }

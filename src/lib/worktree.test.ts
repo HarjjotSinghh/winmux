@@ -21,18 +21,21 @@ describe("slugifyBranchName", () => {
 });
 
 describe("defaultWorktreePath", () => {
-  it("uses backslashes for windows paths", () => {
+  it("defaults to a sibling folder, never inside the repo", () => {
     expect(defaultWorktreePath("C:\\repo\\app", "feat-x")).toBe(
-      "C:\\repo\\app\\.worktrees\\feat-x"
+      "C:\\repo\\app-feat-x"
     );
   });
   it("uses forward slashes for posix paths", () => {
     expect(defaultWorktreePath("/home/u/repo", "Feat X")).toBe(
-      "/home/u/repo/.worktrees/feat-x"
+      "/home/u/repo-feat-x"
     );
   });
   it("trims trailing separators", () => {
-    expect(defaultWorktreePath("C:\\repo\\", "b")).toBe("C:\\repo\\.worktrees\\b");
+    expect(defaultWorktreePath("C:\\repo\\app\\", "b")).toBe("C:\\repo\\app-b");
+  });
+  it("falls back gracefully at a drive root", () => {
+    expect(defaultWorktreePath("C:\\", "b")).toBe("C:\\b");
   });
 });
 

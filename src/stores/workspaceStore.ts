@@ -330,6 +330,26 @@ function splitNode(
   return node;
 }
 
+/**
+ * Set `cwd` on every terminal pane that doesn't already define one.
+ * Used when creating a workspace from a preset so all panes (including
+ * agent-preset panes like `npm run dev`) start in the active project
+ * directory instead of falling back to the home directory.
+ */
+export function applyCwdToTree(node: PaneNode, cwd: string): PaneNode {
+  if (node.type === "terminal") {
+    return node.cwd ? node : { ...node, cwd };
+  }
+  if (node.type === "browser") {
+    return node;
+  }
+  return {
+    ...node,
+    first: applyCwdToTree(node.first, cwd),
+    second: applyCwdToTree(node.second, cwd),
+  };
+}
+
 /** Terminal id owned by a pane, if that pane currently has one. */
 export function getPaneTerminalId(node: PaneNode, paneId: string): string | null {
   if (node.type === "terminal") {

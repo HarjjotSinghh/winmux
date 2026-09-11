@@ -154,7 +154,11 @@ export async function gitToplevel(cwd: string): Promise<string | null> {
   }
 }
 
-/** `git worktree add [-b branch] path` inside `repo`. Returns git's stdout. */
+/**
+ * `git worktree add [-b branch] -- path` inside `repo`. Returns git's stdout.
+ * The `--` keeps a user-typed location that begins with `-` from being parsed
+ * as a git flag (the Rust gate rejects such paths too — defense in depth).
+ */
 export async function gitWorktreeAdd(
   repo: string,
   path: string,
@@ -162,8 +166,8 @@ export async function gitWorktreeAdd(
 ): Promise<string> {
   const args =
     branch && branch.length > 0
-      ? ["worktree", "add", "-b", branch, path]
-      : ["worktree", "add", path];
+      ? ["worktree", "add", "-b", branch, "--", path]
+      : ["worktree", "add", "--", path];
   return gitRun(repo, args);
 }
 

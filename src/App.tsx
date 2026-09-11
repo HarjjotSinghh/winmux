@@ -13,7 +13,7 @@ import UpdateBanner from "./components/Updater/UpdateBanner";
 import DaemonBanner from "./components/Daemon/DaemonBanner";
 import type { LayoutPreset } from "./components/Sidebar/WorkspacePresets";
 import { AGENT_PRESETS } from "./components/Sidebar/WorkspacePresets";
-import { useWorkspaceStore, getTerminalIds, getFirstTerminalId, getPaneTerminalId } from "./stores/workspaceStore";
+import { useWorkspaceStore, applyCwdToTree, getTerminalIds, getFirstTerminalId, getPaneTerminalId } from "./stores/workspaceStore";
 import { computeLayout, findPaneInDirection } from "./lib/paneLayout";
 import type { PaneDirection } from "./lib/paneLayout";
 import { setBroadcastTargetsProvider } from "./lib/broadcast";
@@ -514,8 +514,11 @@ export default function App() {
     }
   }, []);
 
-  // Alt+Arrow pane navigation. Registered in the capture phase so xterm never
-  // forwards the chord to the shell.
+  // Chords xterm would otherwise forward to the shell. Registered in the
+  // capture phase so the terminal textarea never sees them: xterm's own
+  // keydown listener translates Ctrl+Shift+<letter> into control characters
+  // sent via onData before a bubble-phase window handler could prevent it.
+  // (Placed after all handlers it references to avoid TDZ issues.)
   useEffect(() => {
     const directions: Record<string, PaneDirection> = {
       ArrowLeft: "left",
@@ -524,16 +527,31 @@ export default function App() {
       ArrowDown: "down",
     };
     const handler = (e: KeyboardEvent) => {
-      if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
-      const direction = directions[e.key];
-      if (!direction) return;
-      e.preventDefault();
-      e.stopPropagation();
-      handleFocusDirection(direction);
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+        const direction = directions[e.key];
+        if (!direction) return;
+        e.preventDefault();
+        e.stopPropagation();
+        handleFocusDirection(direction);
+        return;
+      }
+      if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey) {
+        const key = e.key.toLowerCase();
+        if (key === "g") {
+          e.preventDefault();
+          e.stopPropagation();
+          handleToggleBroadcast();
+        } else if (key === "u") {
+          e.preventDefault();
+          e.stopPropagation();
+          void handleOpenWorktreeDialog();
+        }
+      }
     };
     window.addEventListener("keydown", handler, { capture: true });
     return () => window.removeEventListener("keydown", handler, { capture: true });
-  }, [handleFocusDirection]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleOpenBrowser = useCallback(() => {
     if (!activeWorkspace) return;
@@ -551,7 +569,7 @@ export default function App() {
   const pendingSpawnsRef = useRef(new Map<string, string>());
 
   const handleNewWorkspace = useCallback(
-    (preset: LayoutPreset, name: string) => {
+    async (preset: LayoutPreset, name: string) => {
       const tree = preset.build();
       if (preset.spawns && preset.spawns.length > 0) {
         // Map spawns to terminal panes in layout (DFS) order.
@@ -563,10 +581,15 @@ export default function App() {
           if (cmd) pendingSpawnsRef.current.set(paneId, cmd);
         });
       }
-      createWorkspaceWithTree(name, tree);
+      // New workspaces start in the active terminal's directory (when it has
+      // one) so agent presets like `npm run dev` run in the project, not home.
+      const store = useWorkspaceStore.getState();
+      const ws = store.workspaces.find((w) => w.id === store.activeWorkspaceId);
+      const cwd = await resolvePaneCwd(ws?.activeTerminalId ?? null);
+      createWorkspaceWithTree(name, cwd ? applyCwdToTree(tree, cwd) : tree);
       setPresetPickerVisible(false);
     },
-    [createWorkspaceWithTree]
+    [createWorkspaceWithTree, resolvePaneCwd]
   );
 
   const [worktreeDialogVisible, setWorktreeDialogVisible] = useState(false);
@@ -657,12 +680,9 @@ export default function App() {
       } else if (e.ctrlKey && e.shiftKey && e.key === "L") {
         e.preventDefault();
         handleOpenBrowser();
-      } else if (e.ctrlKey && e.shiftKey && (e.key === "G" || e.key === "g")) {
-        e.preventDefault();
-        handleToggleBroadcast();
-      } else if (e.ctrlKey && e.shiftKey && (e.key === "U" || e.key === "u")) {
-        e.preventDefault();
-        handleOpenWorktreeDialog();
+        // NOTE: Ctrl+Shift+G (broadcast) and Ctrl+Shift+U (worktree) are
+        // handled in the capture-phase listener above — by the time a bubble
+        // handler runs, xterm has already forwarded them to the shell.
       } else if (e.ctrlKey && !e.shiftKey && e.key >= "1" && e.key <= "9") {
         const index = parseInt(e.key) - 1;
         if (index < workspaces.length) {
@@ -674,7 +694,7 @@ export default function App() {
 
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [workspaces, setActiveWorkspace, toggleSidebar, handleSplit, handleCloseActivePane, handleOpenBrowser, handleToggleZoom, zoomFont, resetFont, handleNextNotification, handlePrevNotification, handleToggleBroadcast, handleOpenWorktreeDialog]);
+  }, [workspaces, setActiveWorkspace, toggleSidebar, handleSplit, handleCloseActivePane, handleOpenBrowser, handleToggleZoom, zoomFont, resetFont, handleNextNotification, handlePrevNotification]);
 
   const commands = useMemo(
     () => [
@@ -682,7 +702,7 @@ export default function App() {
       ...AGENT_PRESETS.map((p) => ({
         id: `agent-preset-${p.id}`,
         label: `New ${p.name} workspace`,
-        action: () => handleNewWorkspace(p, p.name),
+        action: () => { void handleNewWorkspace(p, p.name); },
       })),
       { id: "splitRight", label: "Split Right", shortcut: "Ctrl+Shift+D", action: () => handleSplit("horizontal") },
       { id: "splitDown", label: "Split Down", shortcut: "Ctrl+Shift+E", action: () => handleSplit("vertical") },
