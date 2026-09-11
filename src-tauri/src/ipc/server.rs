@@ -68,7 +68,12 @@ fn create_named_pipe() -> Result<isize, Box<dyn std::error::Error>> {
 
 #[cfg(windows)]
 fn wait_for_connection(handle: isize) -> Result<(), Box<dyn std::error::Error>> {
-    unsafe { windows_sys::Win32::System::Pipes::ConnectNamedPipe(handle as *mut std::ffi::c_void, std::ptr::null_mut()) };
+    unsafe {
+        windows_sys::Win32::System::Pipes::ConnectNamedPipe(
+            handle as *mut std::ffi::c_void,
+            std::ptr::null_mut(),
+        )
+    };
     Ok(())
 }
 
@@ -129,9 +134,15 @@ fn dispatch_request(
 
         "notification.create" => {
             let params = request.params.unwrap_or_default();
-            let title = params.get("title").and_then(|v| v.as_str()).unwrap_or("WinMux");
+            let title = params
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("WinMux");
             let body = params.get("body").and_then(|v| v.as_str()).unwrap_or("");
-            let terminal_id = params.get("terminalId").and_then(|v| v.as_str()).unwrap_or("");
+            let terminal_id = params
+                .get("terminalId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
 
             let store: &Arc<Mutex<NotificationStore>> =
                 app_handle.state::<Arc<Mutex<NotificationStore>>>().inner();
@@ -152,6 +163,14 @@ fn dispatch_request(
             let text = params.get("text").and_then(|v| v.as_str()).unwrap_or("");
 
             if let Some(tid) = terminal_id {
+                // Daemon-owned PTYs first (most sessions belong to it), then
+                // the in-process fallback.
+                let daemon = app_handle.state::<crate::DaemonHandle>();
+                if let Some(d) = daemon.get() {
+                    if d.write_session(tid, text.as_bytes()).is_ok() {
+                        return JsonRpcResponse::success(id, serde_json::json!({ "ok": true }));
+                    }
+                }
                 match pty_manager.lock() {
                     Ok(mgr) => match mgr.write(tid, text.as_bytes()) {
                         Ok(_) => JsonRpcResponse::success(id, serde_json::json!({ "ok": true })),
@@ -166,7 +185,10 @@ fn dispatch_request(
 
         "browser.open" => {
             let params = request.params.unwrap_or_default();
-            let url = params.get("url").and_then(|v| v.as_str()).unwrap_or("https://google.com");
+            let url = params
+                .get("url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("https://google.com");
             let _ = app_handle.emit("open-browser", serde_json::json!({ "url": url }));
             JsonRpcResponse::success(id, serde_json::json!({ "ok": true }))
         }

@@ -3,6 +3,61 @@
 All notable changes to WinMux are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.13] - 2026-09-11
+
+### Fixed - the real root causes behind "splitting resets my terminals"
+
+- **Daemon IPC deadlocked on every response (since v0.4.0).** Both daemon and
+  client used a duplicated synchronous pipe handle: a blocking read on one
+  thread held the file-object lock, so a write from another thread blocked
+  forever. Every launch logged `daemon: spawn succeeded but pipe never opened
+  - falling back`, so PTY ownership never actually survived a UI restart.
+  Both sides now poll `PeekNamedPipe` and perform I/O single-threaded; the
+  daemon answers RPCs and sessions survive UI restarts for real.
+- **Splitting a pane remounted xterm and killed the PTY.** The pane tree was
+  rendered recursively, so a terminal that became a split changed its position
+  in the React tree and was unmounted. Panes are now rendered as a flat,
+  keyed list (`src/lib/paneLayout.ts`): a split adds a pane and never touches
+  the existing terminal. Divider ratios now persist in the tree too.
+- **`sessionId` was silently dropped when saving a session.** Serde
+  `rename_all` on an enum renames variants, not variant fields, so the UI's
+  `sessionId` never round-tripped and restore always spawned fresh shells.
+  Explicitly renamed and covered by a round-trip test.
+- **Commands that talk to the daemon blocked the UI thread.** Tauri runs sync
+  commands on the main thread; a slow or hung pipe froze the whole app. The
+  terminal commands are now `async`, and `create/write/resize/close/get_*`
+  fall back to in-process PTYs per session, so keystrokes are never routed to
+  a daemon that does not own the session.
+- **Probe connections leaked daemon clients.** Each `connect_or_spawn` probe
+  spawned a reader thread that blocked on the pipe forever (15 idle clients
+  observed after one cold start). Probes are now a synchronous one-shot ping
+  that closes its pipe.
+- **Deleting a workspace leaked every shell it owned.** The sidebar now closes
+  all PTY sessions before removing the workspace, and closing a pane is
+  idempotent.
+- **A shell that exits no longer leaves a dead pane.** The pane respawns a
+  fresh shell (or the workspace closes when others exist), and focus moves to
+  a surviving terminal.
+
+### Fixed - smaller regressions
+
+- Unicode 11 width tables were loaded but never activated (`term.unicode`),
+  breaking emoji/CJK alignment.
+- WebGL context loss left panes blank; the addon is now disposed on loss.
+- React StrictMode double-mount leaked an orphan PTY per terminal in dev.
+- Escape now closes the New Workspace dialog.
+- WebView2's default right-click menu (Refresh / Save as / Print / Inspect)
+  is suppressed app-wide.
+- Browser panes are persisted and restored instead of becoming terminals.
+- `cargo test` could not run at all (Tauri test binaries missed the
+  Common-Controls manifest and died with STATUS_ENTRYPOINT_NOT_FOUND).
+
+### Added
+
+- Headless regression tests: `cargo test` boots a real daemon on an isolated
+  pipe and drives the full RPC round-trip; `pnpm test` (vitest) covers pane
+  tree stability and layout. CI runs both.
+
 ## [0.4.12] - 2026-04-14
 
 ### Fixed — root cause of the "daemon keeps crashing" report

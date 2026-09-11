@@ -9,12 +9,12 @@
 //! * **Push notifications** (`session.output|exit|osc`) → dispatched to the
 //!   session's registered `SessionSinks`.
 
-use crate::daemon::protocol::{method, DAEMON_PIPE_NAME};
+use crate::daemon::protocol::method;
 use crate::pty::OscNotif;
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
@@ -37,6 +37,14 @@ pub struct SessionSinks {
 
 struct Inner {
     writer: Mutex<std::fs::File>,
+    reader: Mutex<std::fs::File>,
+    /// Serializes raw pipe I/O across threads. A synchronous (non-overlapped)
+    /// pipe handle locks its file object while a read/write is pending, so a
+    /// blocking read on one thread would deadlock a write from another. The
+    /// reader thread therefore only ever holds this lock for a `PeekNamedPipe`
+    /// and a read of bytes that are already available; it never blocks while
+    /// holding it, so writers can always proceed.
+    io: Mutex<()>,
     next_id: AtomicU64,
     pending: Arc<Mutex<HashMap<u64, Sender<CallResult>>>>,
     sinks: Arc<Mutex<HashMap<String, SessionSinks>>>,
@@ -69,10 +77,25 @@ impl DaemonClient {
     /// retry loop so probe connections that close immediately don't trigger
     /// a full supervisor run.
     fn connect_with_supervision(app: AppHandle, supervise: bool) -> Result<Self, String> {
+        Self::connect_inner(Some(app), supervise)
+    }
+
+    /// Connect without the disconnect supervisor. Exposed for integration
+    /// tests so they can exercise the real client against a local daemon.
+    #[doc(hidden)]
+    pub fn connect_for_test() -> Result<Self, String> {
+        Self::connect_inner(None, false)
+    }
+
+    /// Connects and spawns the reader thread. `app` is only needed for the
+    /// disconnect supervisor; `None` is used by tests.
+    fn connect_inner(app: Option<AppHandle>, supervise: bool) -> Result<Self, String> {
         let (reader_file, writer_file) = open_pipe_pair()?;
 
         let inner = Arc::new(Inner {
             writer: Mutex::new(writer_file),
+            reader: Mutex::new(reader_file),
+            io: Mutex::new(()),
             next_id: AtomicU64::new(1),
             pending: Arc::new(Mutex::new(HashMap::new())),
             sinks: Arc::new(Mutex::new(HashMap::new())),
@@ -81,7 +104,7 @@ impl DaemonClient {
         let reader_inner = inner.clone();
         let app_for_disconnect = app;
         std::thread::spawn(move || {
-            reader_loop(reader_file, reader_inner.clone());
+            reader_loop(reader_inner.clone());
             log::warn!("daemon_client: reader exited — daemon disconnected");
 
             // PTYs die with the daemon. Notify every attached tab so the UI
@@ -105,7 +128,9 @@ impl DaemonClient {
             }
 
             if supervise {
-                std::thread::spawn(move || supervise_reconnect(app_for_disconnect));
+                if let Some(app) = app_for_disconnect {
+                    std::thread::spawn(move || supervise_reconnect(app));
+                }
             }
         });
 
@@ -113,42 +138,37 @@ impl DaemonClient {
     }
 
     /// Connect, or try to spawn `winmux-daemon.exe` next to the current exe
-    /// and reconnect. Returns `Ok(None)` if the daemon binary isn't present
-    /// or couldn't be started — caller should fall back to in-process PTYs.
+    /// and reconnect. Returns `None` if the daemon binary isn't present or
+    /// couldn't be started — caller should fall back to in-process PTYs.
+    ///
+    /// Liveness is checked with `probe_pipe`, NOT with a throwaway
+    /// `DaemonClient`. A throwaway client spawns a reader thread that blocks
+    /// on the pipe forever once the caller drops it, leaking a daemon-side
+    /// connection per retry (observed: 15 idle clients after one cold start).
     pub fn connect_or_spawn(app: AppHandle) -> Option<Self> {
-        // First attempt — probe unsupervised so a failed ping (stale pipe)
-        // doesn't immediately kick off a supervisor run.
-        if let Ok(probe) = Self::connect_with_supervision(app.clone(), false) {
-            if probe.ping().is_ok() {
-                drop(probe);
-                if let Ok(client) = Self::connect(app.clone()) {
-                    if client.ping().is_ok() {
-                        log::info!("daemon: attached to existing instance");
-                        return Some(client);
-                    }
-                }
+        if probe_pipe(PROBE_TIMEOUT_MS).is_ok() {
+            if let Some(client) = Self::connect(app.clone()).ok().filter(|c| c.ping().is_ok()) {
+                log::info!("daemon: attached to existing instance");
+                return Some(client);
             }
         }
 
         // Try to spawn the daemon next to the current exe
         if let Err(e) = spawn_daemon_detached() {
-            log::warn!("daemon: could not spawn — falling back to in-process ({})", e);
+            log::warn!(
+                "daemon: could not spawn — falling back to in-process ({})",
+                e
+            );
             return None;
         }
 
-        // Retry connect up to ~3 seconds. Probes are unsupervised; only the
-        // final returned client has a supervisor attached.
+        // Retry connect up to ~3 seconds.
         for attempt in 0..15 {
             std::thread::sleep(Duration::from_millis(200));
-            if let Ok(probe) = Self::connect_with_supervision(app.clone(), false) {
-                if probe.ping().is_ok() {
-                    drop(probe);
-                    if let Ok(client) = Self::connect(app.clone()) {
-                        if client.ping().is_ok() {
-                            log::info!("daemon: spawned and connected (attempt {})", attempt + 1);
-                            return Some(client);
-                        }
-                    }
+            if probe_pipe(PROBE_TIMEOUT_MS).is_ok() {
+                if let Some(client) = Self::connect(app.clone()).ok().filter(|c| c.ping().is_ok()) {
+                    log::info!("daemon: spawned and connected (attempt {})", attempt + 1);
+                    return Some(client);
                 }
             }
         }
@@ -157,6 +177,9 @@ impl DaemonClient {
         None
     }
 }
+
+/// How long a liveness probe may block waiting for the ping response.
+const PROBE_TIMEOUT_MS: u32 = 1000;
 
 // ── Supervisor / crash-rate gate ────────────────────────────────────
 
@@ -187,7 +210,7 @@ fn should_respawn() -> bool {
 /// respawn via `connect_or_spawn` (which internally retries pipe open for
 /// ~3s) and installs the new client into the managed `DaemonHandle`.
 fn supervise_reconnect(app: AppHandle) {
-    let state: tauri::State<crate::DaemonHandle> = app.state();
+    let state: tauri::State<std::sync::Arc<crate::DaemonHandle>> = app.state();
 
     // If the app is shutting down, the pipe close is expected — don't
     // respawn (it'd race the app.exit and potentially leak a daemon
@@ -200,7 +223,8 @@ fn supervise_reconnect(app: AppHandle) {
     if !should_respawn() {
         log::error!(
             "daemon: crash-loop detected (>{} crashes in {}s) — giving up",
-            MAX_CRASHES_IN_WINDOW, CRASH_WINDOW_SECS
+            MAX_CRASHES_IN_WINDOW,
+            CRASH_WINDOW_SECS
         );
         let _ = app.emit("daemon-dead", ());
         return;
@@ -287,8 +311,8 @@ fn spawn_daemon_detached() -> Result<(), String> {
 
 #[cfg(windows)]
 fn daemon_log_path() -> Result<std::path::PathBuf, String> {
-    let local_appdata = std::env::var("LOCALAPPDATA")
-        .map_err(|_| "LOCALAPPDATA env var not set".to_string())?;
+    let local_appdata =
+        std::env::var("LOCALAPPDATA").map_err(|_| "LOCALAPPDATA env var not set".to_string())?;
     Ok(std::path::PathBuf::from(local_appdata)
         .join("WinMux")
         .join("daemon.log"))
@@ -300,7 +324,6 @@ fn spawn_daemon_detached() -> Result<(), String> {
 }
 
 impl DaemonClient {
-
     /// Synchronously send an RPC request and wait for the matching response.
     fn call(&self, method: &str, params: Value) -> Result<Value, String> {
         let id = self.inner.next_id.fetch_add(1, Ordering::SeqCst);
@@ -316,6 +339,9 @@ impl DaemonClient {
         let line = serde_json::to_string(&req).map_err(|e| e.to_string())?;
 
         {
+            // Hold the I/O lock so we never write while the reader thread has a
+            // read pending on the same (synchronous) pipe file object.
+            let _io_guard = self.inner.io.lock().map_err(|e| e.to_string())?;
             let mut w = self.inner.writer.lock().map_err(|e| e.to_string())?;
             w.write_all(line.as_bytes()).map_err(|e| e.to_string())?;
             w.write_all(b"\n").map_err(|e| e.to_string())?;
@@ -351,7 +377,11 @@ impl DaemonClient {
 
     pub fn list_sessions(&self) -> Result<Vec<SessionInfoLite>, String> {
         let v = self.call(method::LIST_SESSIONS, Value::Null)?;
-        let arr = v.get("sessions").and_then(|x| x.as_array()).cloned().unwrap_or_default();
+        let arr = v
+            .get("sessions")
+            .and_then(|x| x.as_array())
+            .cloned()
+            .unwrap_or_default();
         let mut out = Vec::with_capacity(arr.len());
         for item in arr {
             out.push(serde_json::from_value(item).map_err(|e| e.to_string())?);
@@ -389,25 +419,38 @@ impl DaemonClient {
             .map_err(|e| e.to_string())?
             .insert(id.clone(), sinks);
 
-        self.call(method::ATTACH_SESSION, json!({ "id": id }))?;
+        if let Err(e) = self.call(method::ATTACH_SESSION, json!({ "id": id })) {
+            // Don't leak the just-created PTY or a phantom sink entry.
+            if let Ok(mut sinks) = self.inner.sinks.lock() {
+                sinks.remove(&id);
+            }
+            let _ = self.call(method::CLOSE_SESSION, json!({ "id": id }));
+            return Err(e);
+        }
         Ok(id)
     }
 
     /// Attach to an existing session (used on UI restart). Returns scrollback
     /// bytes so the caller can replay them into xterm before live output flows.
     /// Registers sinks to receive subsequent output.
-    pub fn attach_session(
-        &self,
-        id: &str,
-        sinks: SessionSinks,
-    ) -> Result<AttachInfo, String> {
+    pub fn attach_session(&self, id: &str, sinks: SessionSinks) -> Result<AttachInfo, String> {
         self.inner
             .sinks
             .lock()
             .map_err(|e| e.to_string())?
             .insert(id.to_string(), sinks);
 
-        let v = self.call(method::ATTACH_SESSION, json!({ "id": id }))?;
+        let v = match self.call(method::ATTACH_SESSION, json!({ "id": id })) {
+            Ok(v) => v,
+            Err(e) => {
+                // The daemon rejected the attach (usually not_found): drop the
+                // sink so a later successful attach can't be shadowed by it.
+                if let Ok(mut sinks) = self.inner.sinks.lock() {
+                    sinks.remove(id);
+                }
+                return Err(e);
+            }
+        };
         let scrollback_b64 = v
             .get("scrollback_b64")
             .and_then(|x| x.as_str())
@@ -452,7 +495,8 @@ impl DaemonClient {
         if let Ok(mut sinks) = self.inner.sinks.lock() {
             sinks.remove(id);
         }
-        self.call(method::CLOSE_SESSION, json!({ "id": id })).map(|_| ())
+        self.call(method::CLOSE_SESSION, json!({ "id": id }))
+            .map(|_| ())
     }
 
     pub fn get_cwd(&self, id: &str) -> Result<String, String> {
@@ -465,10 +509,7 @@ impl DaemonClient {
 
     pub fn get_scrollback(&self, id: &str) -> Result<Vec<u8>, String> {
         let v = self.call(method::GET_SCROLLBACK, json!({ "id": id }))?;
-        let b64 = v
-            .get("data_b64")
-            .and_then(|x| x.as_str())
-            .unwrap_or("");
+        let b64 = v.get("data_b64").and_then(|x| x.as_str()).unwrap_or("");
         B64.decode(b64).map_err(|e| e.to_string())
     }
 }
@@ -489,53 +530,109 @@ pub struct SessionInfoLite {
 
 // ── Reader loop ─────────────────────────────────────────────────────
 
-fn reader_loop(reader_file: std::fs::File, inner: Arc<Inner>) {
-    let reader = BufReader::new(reader_file);
-    for line in reader.lines() {
-        let Ok(line) = line else {
-            log::debug!("DaemonClient reader: pipe closed");
-            break;
-        };
-        if line.trim().is_empty() {
-            continue;
-        }
-        let Ok(v) = serde_json::from_str::<Value>(&line) else {
-            log::debug!("DaemonClient reader: bad json: {}", line);
-            continue;
+#[cfg(windows)]
+fn reader_loop(inner: Arc<Inner>) {
+    let mut pending = String::new();
+    let mut buf = vec![0u8; 65536];
+
+    loop {
+        // Hold the I/O lock only for a non-blocking peek plus a read of bytes
+        // that are already available. The read can therefore never sit blocked
+        // holding the lock, so `call()` writes are never starved.
+        let chunk = {
+            let Ok(_io_guard) = inner.io.lock() else {
+                break;
+            };
+            let Ok(mut reader) = inner.reader.lock() else {
+                break;
+            };
+            let mut avail: u32 = 0;
+            let ok = unsafe {
+                windows_sys::Win32::System::Pipes::PeekNamedPipe(
+                    std::os::windows::io::AsRawHandle::as_raw_handle(&*reader) as _,
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null_mut(),
+                    &mut avail,
+                    std::ptr::null_mut(),
+                )
+            };
+            if ok == 0 {
+                break; // pipe closed / daemon gone
+            }
+            if avail > 0 {
+                match std::io::Read::read(&mut *reader, &mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => Some(buf[..n].to_vec()),
+                    Err(_) => break,
+                }
+            } else {
+                None
+            }
         };
 
-        if v.get("id").and_then(|x| x.as_u64()).is_some() {
-            // Response
-            let id = v["id"].as_u64().unwrap();
-            let ok = v.get("ok").and_then(|x| x.as_bool()).unwrap_or(false);
-            let result = v.get("result").cloned();
-            let error_message = v
-                .get("error")
-                .and_then(|e| e.get("message"))
-                .and_then(|m| m.as_str())
-                .map(|s| s.to_string());
-
-            if let Ok(mut p) = inner.pending.lock() {
-                if let Some(tx) = p.remove(&id) {
-                    let _ = tx.send(CallResult {
-                        ok,
-                        result,
-                        error_message,
-                    });
+        match chunk {
+            Some(bytes) => {
+                pending.push_str(&String::from_utf8_lossy(&bytes));
+                while let Some(pos) = pending.find('\n') {
+                    let line: String = pending.drain(..=pos).collect();
+                    handle_inbound_line(line.trim_end_matches(['\r', '\n']), &inner);
                 }
             }
-        } else if let Some(m) = v.get("method").and_then(|x| x.as_str()) {
-            // Push notification
-            dispatch_notification(m, v.get("params").cloned().unwrap_or(Value::Null), &inner);
+            None => std::thread::sleep(Duration::from_millis(2)),
         }
+    }
+
+    log::debug!("DaemonClient reader: pipe closed");
+}
+
+#[cfg(not(windows))]
+fn reader_loop(_inner: Arc<Inner>) {}
+
+fn handle_inbound_line(line: &str, inner: &Arc<Inner>) {
+    if line.trim().is_empty() {
+        return;
+    }
+    let Ok(v) = serde_json::from_str::<Value>(line) else {
+        log::debug!("DaemonClient reader: bad json: {}", line);
+        return;
+    };
+
+    if v.get("id").and_then(|x| x.as_u64()).is_some() {
+        // Response
+        let id = v["id"].as_u64().unwrap();
+        let ok = v.get("ok").and_then(|x| x.as_bool()).unwrap_or(false);
+        let result = v.get("result").cloned();
+        let error_message = v
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+            .map(|s| s.to_string());
+
+        if let Ok(mut p) = inner.pending.lock() {
+            if let Some(tx) = p.remove(&id) {
+                let _ = tx.send(CallResult {
+                    ok,
+                    result,
+                    error_message,
+                });
+            }
+        }
+    } else if let Some(m) = v.get("method").and_then(|x| x.as_str()) {
+        // Push notification
+        dispatch_notification(m, v.get("params").cloned().unwrap_or(Value::Null), inner);
     }
 }
 
 fn dispatch_notification(method_name: &str, params: Value, inner: &Arc<Inner>) {
     match method_name {
         method::SESSION_OUTPUT => {
-            let Some(id) = params.get("id").and_then(|x| x.as_str()) else { return };
-            let Some(b64) = params.get("data_b64").and_then(|x| x.as_str()) else { return };
+            let Some(id) = params.get("id").and_then(|x| x.as_str()) else {
+                return;
+            };
+            let Some(b64) = params.get("data_b64").and_then(|x| x.as_str()) else {
+                return;
+            };
             let Ok(data) = B64.decode(b64) else { return };
             let sinks = match inner.sinks.lock() {
                 Ok(s) => s,
@@ -546,7 +643,9 @@ fn dispatch_notification(method_name: &str, params: Value, inner: &Arc<Inner>) {
             }
         }
         method::SESSION_EXIT => {
-            let Some(id) = params.get("id").and_then(|x| x.as_str()) else { return };
+            let Some(id) = params.get("id").and_then(|x| x.as_str()) else {
+                return;
+            };
             let code = params
                 .get("exit_code")
                 .and_then(|x| x.as_u64())
@@ -560,7 +659,9 @@ fn dispatch_notification(method_name: &str, params: Value, inner: &Arc<Inner>) {
             }
         }
         method::SESSION_OSC => {
-            let Some(id) = params.get("id").and_then(|x| x.as_str()) else { return };
+            let Some(id) = params.get("id").and_then(|x| x.as_str()) else {
+                return;
+            };
             let osc_type = params
                 .get("osc_type")
                 .and_then(|x| x.as_str())
@@ -611,7 +712,7 @@ fn open_pipe_pair() -> Result<(std::fs::File, std::fs::File), String> {
         .read(true)
         .write(true)
         .share_mode(0x0000_0003) // FILE_SHARE_READ | FILE_SHARE_WRITE
-        .open(DAEMON_PIPE_NAME)
+        .open(crate::daemon::protocol::daemon_pipe_name())
         .map_err(|e| format!("connect winmux-daemon pipe: {}", e))?;
 
     let reader = writer
@@ -624,4 +725,40 @@ fn open_pipe_pair() -> Result<(std::fs::File, std::fs::File), String> {
 #[cfg(not(windows))]
 fn open_pipe_pair() -> Result<(std::fs::File, std::fs::File), String> {
     Err("Daemon client only implemented on Windows".into())
+}
+
+/// Send a synchronous `daemon.ping` on a fresh connection and wait for the
+/// reply with `WaitForSingleObject`. Both pipe handles are dropped when this
+/// returns, so the daemon sees the client disconnect immediately — no reader
+/// thread, no leaked connection.
+#[cfg(windows)]
+fn probe_pipe(timeout_ms: u32) -> Result<(), String> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+    use windows_sys::Win32::System::Threading::WaitForSingleObject;
+
+    let (reader_file, mut writer_file) = open_pipe_pair()?;
+
+    let req = json!({ "id": 0, "method": method::PING, "params": null });
+    let line = serde_json::to_string(&req).map_err(|e| e.to_string())?;
+    writer_file
+        .write_all(line.as_bytes())
+        .and_then(|_| writer_file.write_all(b"\n"))
+        .and_then(|_| writer_file.flush())
+        .map_err(|e| format!("probe write: {}", e))?;
+
+    let ready = unsafe { WaitForSingleObject(reader_file.as_raw_handle() as _, timeout_ms) };
+    if ready != WAIT_OBJECT_0 {
+        return Err("probe: no response from daemon".into());
+    }
+
+    let mut response = String::new();
+    BufReader::new(reader_file)
+        .read_line(&mut response)
+        .map_err(|e| format!("probe read: {}", e))?;
+    if response.trim().is_empty() {
+        return Err("probe: empty response".into());
+    }
+    Ok(())
 }

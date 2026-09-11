@@ -40,8 +40,16 @@ pub enum PaneData {
         scrollback: String,
         /// Daemon session ID from the previous run. When present the UI will
         /// try to re-attach to the live PTY instead of spawning a fresh shell.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ///
+        /// NOTE: `rename_all` on an enum only renames *variants* — variant
+        /// fields keep their Rust names unless renamed explicitly. Without
+        /// this `rename`, the UI's `sessionId` was silently dropped on save
+        /// and sessions could never be re-attached.
+        #[serde(rename = "sessionId", default, skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
+    },
+    Browser {
+        url: String,
     },
     Split {
         direction: String,
@@ -106,6 +114,56 @@ impl Default for SessionData {
                 height: 800,
                 maximized: false,
             },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The UI sends `sessionId` (camelCase). `rename_all` on the enum only
+    /// renames variants, not variant fields — without the explicit `rename`
+    /// this silently parsed as `None`, which broke PTY re-attach on restore.
+    #[test]
+    fn terminal_session_id_roundtrips_as_camel_case() {
+        let json = r#"{"type":"terminal","cwd":"C:\\","shell":"cmd.exe","scrollback":"","sessionId":"abc-123"}"#;
+        let pane: PaneData = serde_json::from_str(json).expect("parse");
+
+        match &pane {
+            PaneData::Terminal { session_id, .. } => {
+                assert_eq!(session_id.as_deref(), Some("abc-123"));
+            }
+            other => panic!("expected terminal pane, got {:?}", other),
+        }
+
+        let value = serde_json::to_value(&pane).expect("serialize");
+        assert_eq!(
+            value.get("sessionId").and_then(|v| v.as_str()),
+            Some("abc-123"),
+            "saved sessions must carry the daemon session id"
+        );
+    }
+
+    #[test]
+    fn panes_without_session_id_stay_lean() {
+        let pane = PaneData::Terminal {
+            cwd: "C:\\".into(),
+            shell: "cmd.exe".into(),
+            scrollback: String::new(),
+            session_id: None,
+        };
+        let value = serde_json::to_value(&pane).expect("serialize");
+        assert!(value.get("sessionId").is_none());
+    }
+
+    #[test]
+    fn browser_panes_roundtrip() {
+        let json = r#"{"type":"browser","url":"https://example.com"}"#;
+        let pane: PaneData = serde_json::from_str(json).expect("parse");
+        match pane {
+            PaneData::Browser { url } => assert_eq!(url, "https://example.com"),
+            other => panic!("expected browser pane, got {:?}", other),
         }
     }
 }

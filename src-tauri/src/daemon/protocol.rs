@@ -16,6 +16,12 @@ use serde::{Deserialize, Serialize};
 
 pub const DAEMON_PIPE_NAME: &str = r"\\.\pipe\winmux-daemon";
 
+/// Active pipe name. Overridable via `WINMUX_DAEMON_PIPE` so tests (and
+/// multiple installations) can run without colliding with a real daemon.
+pub fn daemon_pipe_name() -> String {
+    std::env::var("WINMUX_DAEMON_PIPE").unwrap_or_else(|_| DAEMON_PIPE_NAME.to_string())
+}
+
 // ── Shared RPC envelope ─────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]

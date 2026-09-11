@@ -10,6 +10,7 @@ import {
   createTerminal,
   writeTerminal,
   resizeTerminal,
+  closeTerminal,
   clipboardPaste,
   clipboardWriteText,
   attachTerminal,
@@ -46,11 +47,15 @@ function formatTime(ms: number): string {
  * scheduled via `requestAnimationFrame`, so xterm gets at most one write per
  * 16 ms no matter how fast the PTY is producing.
  */
-function makeCoalescedWriter(term: Terminal) {
+function makeCoalescedWriter(term: Terminal, isAlive: () => boolean = () => true) {
   let pending: Uint8Array[] = [];
   let scheduled = false;
   const flush = () => {
     scheduled = false;
+    if (!isAlive()) {
+      pending = [];
+      return;
+    }
     if (pending.length === 0) return;
     if (pending.length === 1) {
       term.write(pending[0]);
@@ -69,6 +74,7 @@ function makeCoalescedWriter(term: Terminal) {
     term.write(merged);
   };
   return (data: Uint8Array) => {
+    if (!isAlive()) return;
     pending.push(data);
     if (!scheduled) {
       scheduled = true;
@@ -129,6 +135,12 @@ export default function TerminalView({
     const container = containerRef.current;
     if (!container) return;
 
+    // React StrictMode mounts → unmounts → mounts effects in development.
+    // Without this flag the first mount's async `createTerminal` would spawn a
+    // shell after its cleanup already ran, leaking an orphan PTY for the whole
+    // session. If the promise resolves after unmount, we close it immediately.
+    let disposed = false;
+
     const term = new Terminal({
       cursorBlink: true,
       cursorStyle: "bar",
@@ -148,6 +160,9 @@ export default function TerminalView({
       })
     );
     term.loadAddon(new Unicode11Addon());
+    // Loading the addon isn't enough — xterm keeps its default Unicode 6
+    // width table until this is set, which breaks emoji/CJK alignment.
+    term.unicode.activeVersion = "11";
 
     // Ctrl+Shift+C to copy selection, Ctrl+Shift+V to paste.
     // Return false to tell xterm we've handled the event.
@@ -183,9 +198,16 @@ export default function TerminalView({
       }
     });
 
-    // Try WebGL, fall back silently to canvas
+    // Try WebGL, fall back silently to canvas. A lost GPU context must
+    // dispose the addon, otherwise xterm keeps rendering into a dead canvas
+    // (blank/frozen pane) until the component remounts.
     try {
-      term.loadAddon(new WebglAddon());
+      const webgl = new WebglAddon();
+      webgl.onContextLoss(() => {
+        console.warn("webgl context lost — falling back to canvas renderer");
+        webgl.dispose();
+      });
+      term.loadAddon(webgl);
     } catch {
       // Canvas renderer is fine
     }
@@ -194,7 +216,7 @@ export default function TerminalView({
     fitAddonRef.current = fitAddon;
 
     // Coalesce live PTY output so bursts don't stall the main thread.
-    const writeCoalesced = makeCoalescedWriter(term);
+    const writeCoalesced = makeCoalescedWriter(term, () => !disposed);
 
     // Delayed fit — container needs a frame to have real dimensions
     requestAnimationFrame(() => {
@@ -205,6 +227,7 @@ export default function TerminalView({
       }
 
       const wireSession = (id: string) => {
+        if (disposed) return;
         terminalIdRef.current = id;
         onReadyRef.current(id);
         term.onData((data) => {
@@ -218,11 +241,13 @@ export default function TerminalView({
 
       const tryAttachThenFallback = async () => {
         const restore = restoreRef.current;
+        if (disposed) return;
 
         // Path A: try to re-attach to a live daemon / in-process session
         if (restore?.sessionId) {
           try {
             const info = await attachTerminal(restore.sessionId, writeCoalesced);
+            if (disposed) return;
             if (info.scrollbackBase64) {
               try {
                 term.write(base64ToUint8(info.scrollbackBase64));
@@ -246,6 +271,7 @@ export default function TerminalView({
         try {
           const id = await createTerminal(
             (data) => {
+              if (disposed) return;
               if (replayed) writeCoalesced(data);
               else pendingOutput.push(data);
             },
@@ -256,6 +282,13 @@ export default function TerminalView({
               rows: term.rows,
             }
           );
+
+          // StrictMode (or a fast unmount) disposed this view while the PTY was
+          // spawning. Close it so we don't leak an invisible shell.
+          if (disposed) {
+            closeTerminal(id).catch(() => {});
+            return;
+          }
 
           if (hasVisualRestore && restore) {
             const header = `\r\n\x1b[2;90m── Previous session · ${formatTime(restore.savedAt)} ──\x1b[0m\r\n`;
@@ -298,6 +331,7 @@ export default function TerminalView({
     observer.observe(container);
 
     return () => {
+      disposed = true;
       observer.disconnect();
       term.dispose();
     };

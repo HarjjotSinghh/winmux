@@ -1,12 +1,13 @@
 {
   "name": "winmux",
   "private": true,
-  "version": "0.4.12",
+  "version": "0.4.13",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "test": "vitest run",
     "tauri": "tauri"
   },
   "dependencies": {
@@ -17,16 +18,18 @@
     "@tauri-apps/plugin-store": "^2",
     "@tauri-apps/plugin-updater": "^2",
     "@xterm/addon-fit": "^0.10",
-    "@xterm/addon-webgl": "^0.18",
-    "@xterm/addon-web-links": "^0.11",
     "@xterm/addon-unicode11": "^0.8",
+    "@xterm/addon-web-links": "^0.11",
+    "@xterm/addon-webgl": "^0.18",
     "@xterm/xterm": "^5.5",
     "react": "^19",
     "react-dom": "^19",
     "zustand": "^5"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild"]
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
@@ -34,6 +37,7 @@
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^4",
     "typescript": "^5.7",
-    "vite": "^6"
+    "vite": "^6",
+    "vitest": "^5.0.0"
   }
 }

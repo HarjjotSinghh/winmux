@@ -1,6 +1,6 @@
 [package]
 name = "winmux"
-version = "0.4.12"
+version = "0.4.13"
 edition = "2021"
 description = "Terminal multiplexer for Windows, built for AI coding agents"
 license = "AGPL-3.0-or-later"
@@ -53,6 +53,7 @@ env_logger = "0.11"
 windows-sys = { version = "0.59", features = [
   "Win32_System_Pipes",
   "Win32_System_IO",
+  "Win32_System_Threading",
   "Win32_Foundation",
   "Win32_Security",
   "Win32_Storage_FileSystem",

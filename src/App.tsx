@@ -10,7 +10,7 @@ import WorkspacePresets from "./components/Sidebar/WorkspacePresets";
 import UpdateBanner from "./components/Updater/UpdateBanner";
 import DaemonBanner from "./components/Daemon/DaemonBanner";
 import type { LayoutPreset } from "./components/Sidebar/WorkspacePresets";
-import { useWorkspaceStore, getTerminalIds } from "./stores/workspaceStore";
+import { useWorkspaceStore, getTerminalIds, getFirstTerminalId } from "./stores/workspaceStore";
 import { useSettingsStore } from "./stores/settingsStore";
 import { closeTerminal, saveSession, loadSession, initNotifications, showSystemNotification, writeTerminal, getCwd, getTerminalShell, getScrollback, openDevtools, diagLog } from "./lib/ipc";
 import type { SessionData, PaneNode, PaneNodeData } from "./types";
@@ -36,12 +36,11 @@ export default function App() {
     activeWorkspaceId,
     createWorkspace,
     createWorkspaceWithTree,
-    removeWorkspace,
     setActiveWorkspace,
     setActiveTerminal,
     updatePaneTree,
     splitPane,
-    closePane,
+    setPaneRatio,
     toggleSidebar,
     incrementUnread,
     openBrowserInSplit,
@@ -174,28 +173,68 @@ export default function App() {
     };
   }, [workspaces, activeWorkspaceId, sidebarWidth, sidebarVisible]);
 
-  // Listen for terminal exit events
+  /**
+   * Close a pane, kill (or account for) its PTY, and re-target focus to a
+   * surviving terminal. Reads the store directly so it can never act on a
+   * stale `workspaces` closure (the terminal-exit event fires from outside
+   * React and used to race re-renders).
+   */
+  const removeTerminalPanes = useCallback(
+    (workspaceId: string, paneId: string, opts: { ptyAlreadyExited?: boolean } = {}) => {
+      const store = useWorkspaceStore.getState();
+      const ws = store.workspaces.find((w) => w.id === workspaceId);
+      if (!ws) return;
+
+      const isOnlyPane =
+        ws.paneTree.type === "terminal" && ws.paneTree.id === paneId;
+
+      if (isOnlyPane) {
+        if (opts.ptyAlreadyExited) {
+          // Shell exited on its own. Close the workspace if there are others;
+          // otherwise respawn a fresh shell so the app isn't stuck on a dead pane.
+          if (store.workspaces.length > 1) {
+            store.removeWorkspace(workspaceId);
+          } else {
+            store.resetPane(workspaceId, paneId);
+          }
+        } else if (store.workspaces.length > 1) {
+          getTerminalIds(ws.paneTree).forEach((id) => closeTerminal(id).catch(() => {}));
+          store.removeWorkspace(workspaceId);
+        }
+        return;
+      }
+
+      const removedId = store.closePane(workspaceId, paneId);
+      if (removedId && !opts.ptyAlreadyExited) {
+        closeTerminal(removedId).catch(() => {});
+      }
+
+      const updated = useWorkspaceStore
+        .getState()
+        .workspaces.find((w) => w.id === workspaceId);
+      if (!updated) return;
+      if (updated.activeTerminalId === removedId || !updated.activeTerminalId) {
+        const next = getFirstTerminalId(updated.paneTree);
+        if (next) store.setActiveTerminal(workspaceId, next);
+      }
+    },
+    []
+  );
+
+  // Listen for terminal exit events (shell exited, process crashed, …)
   useEffect(() => {
     const unlisten = listen<{ terminal_id: string }>("terminal-exit", (event) => {
-      const ws = workspaces.find((w) => {
-        const ids = getTerminalIds(w.paneTree);
-        return ids.includes(event.payload.terminal_id);
-      });
-      if (ws) {
-        const pane = findPaneByTerminalId(ws.paneTree, event.payload.terminal_id);
-        if (pane) {
-          const removedId = closePane(ws.id, pane.id);
-          if (removedId && ws.paneTree.type === "terminal") {
-            if (workspaces.length > 1) {
-              removeWorkspace(ws.id);
-            }
-          }
-        }
-      }
+      const store = useWorkspaceStore.getState();
+      const ws = store.workspaces.find((w) =>
+        getTerminalIds(w.paneTree).includes(event.payload.terminal_id)
+      );
+      if (!ws) return;
+      const pane = findPaneByTerminalId(ws.paneTree, event.payload.terminal_id);
+      if (pane) removeTerminalPanes(ws.id, pane.id, { ptyAlreadyExited: true });
     });
 
     return () => { unlisten.then((fn) => fn()); };
-  }, [workspaces, closePane, removeWorkspace]);
+  }, [removeTerminalPanes]);
 
   // Drag-drop files → write quoted paths into active terminal
   useEffect(() => {
@@ -260,20 +299,21 @@ export default function App() {
 
   const handlePaneClose = useCallback(
     (paneId: string) => {
-      if (!activeWorkspace) return;
-      if (activeWorkspace.paneTree.type === "terminal" && activeWorkspace.paneTree.id === paneId) {
-        if (workspaces.length > 1) {
-          const ids = getTerminalIds(activeWorkspace.paneTree);
-          ids.forEach((id) => closeTerminal(id).catch(() => {}));
-          removeWorkspace(activeWorkspace.id);
-        }
-        return;
-      }
-      const removedId = closePane(activeWorkspace.id, paneId);
-      if (removedId) closeTerminal(removedId).catch(() => {});
+      const activeId = useWorkspaceStore.getState().activeWorkspaceId;
+      if (!activeId) return;
+      removeTerminalPanes(activeId, paneId);
     },
-    [activeWorkspace, workspaces, closePane, removeWorkspace]
+    [removeTerminalPanes]
   );
+
+  /** Delete a workspace — kills every PTY it owns so no shells leak. */
+  const handleCloseWorkspace = useCallback((workspaceId: string) => {
+    const store = useWorkspaceStore.getState();
+    const ws = store.workspaces.find((w) => w.id === workspaceId);
+    if (!ws) return;
+    getTerminalIds(ws.paneTree).forEach((id) => closeTerminal(id).catch(() => {}));
+    store.removeWorkspace(workspaceId);
+  }, []);
 
   const handleCloseActivePane = useCallback(() => {
     if (!activeWorkspace) return;
@@ -298,7 +338,7 @@ export default function App() {
   const handleNewWorkspace = useCallback(
     (preset: LayoutPreset, name: string) => {
       const tree = preset.build();
-      createWorkspaceWithTree(name || undefined as unknown as string, tree);
+      createWorkspaceWithTree(name, tree);
       setPresetPickerVisible(false);
     },
     [createWorkspaceWithTree]
@@ -386,7 +426,10 @@ export default function App() {
 
       <div style={{ flex: 1, display: "flex", overflow: "hidden", position: "relative" }}>
         {sidebarVisible && (
-          <Sidebar onNewWorkspace={() => setPresetPickerVisible(true)} />
+          <Sidebar
+            onNewWorkspace={() => setPresetPickerVisible(true)}
+            onCloseWorkspace={handleCloseWorkspace}
+          />
         )}
 
         {/* Render ALL workspaces, hide inactive ones — keeps terminals alive */}
@@ -415,6 +458,11 @@ export default function App() {
                 shell={settings?.shell.defaultShell}
                 onSplit={ws.id === activeWorkspaceId ? handlePaneSplit : undefined}
                 onClosePane={ws.id === activeWorkspaceId ? handlePaneClose : undefined}
+                onRatioChange={
+                  ws.id === activeWorkspaceId
+                    ? (splitId, ratio) => setPaneRatio(ws.id, splitId, ratio)
+                    : undefined
+                }
               />
             </div>
           ))}
@@ -501,7 +549,7 @@ async function serializePaneTree(
     return { type: "terminal", cwd, shell, scrollback, sessionId: tid };
   }
   if (node.type === "browser") {
-    return { type: "terminal", cwd: "", shell: "" };
+    return { type: "browser", url: node.url };
   }
   const [first, second] = await Promise.all([
     serializePaneTree(node.first, includeScrollback),
@@ -537,6 +585,9 @@ function restorePaneTree(data: PaneNodeData, savedAt: number): PaneNode {
           }
         : undefined,
     };
+  }
+  if (data.type === "browser") {
+    return { type: "browser", id, url: data.url };
   }
   return {
     type: "split",

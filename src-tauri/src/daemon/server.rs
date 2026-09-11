@@ -13,13 +13,13 @@ use crate::daemon::protocol::{
     method, AttachResult, CapabilitiesResult, CreateSessionParams, CreatedResult,
     ListSessionsResult, ResizeParams, RpcNotification, RpcRequest, RpcResponse, SessionExitNotif,
     SessionIdParams, SessionInfo, SessionOscNotif, SessionOutputNotif, WriteParams,
-    DAEMON_PIPE_NAME, PROTOCOL_VERSION,
+    PROTOCOL_VERSION,
 };
 use crate::pty::{OscNotif as PtyOscNotif, PtyManager, SessionCallbacks};
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
@@ -86,11 +86,7 @@ impl DaemonState {
     /// Called whenever we close a session. If that was the last one, restart
     /// the idle clock.
     fn maybe_start_idle(&self) {
-        let session_count = self
-            .pty
-            .lock()
-            .map(|m| m.session_count())
-            .unwrap_or(0);
+        let session_count = self.pty.lock().map(|m| m.session_count()).unwrap_or(0);
         if session_count == 0 {
             if let Ok(mut z) = self.zero_since.lock() {
                 if z.is_none() {
@@ -117,7 +113,10 @@ fn spawn_idle_watcher(state: Arc<DaemonState>) {
         log::info!("daemon: idle watcher disabled (timeout=0)");
         return;
     }
-    log::info!("daemon: idle watcher armed (timeout={}s)", timeout.as_secs());
+    log::info!(
+        "daemon: idle watcher armed (timeout={}s)",
+        timeout.as_secs()
+    );
 
     std::thread::spawn(move || {
         let tick = Duration::from_secs(30);
@@ -129,11 +128,7 @@ fn spawn_idle_watcher(state: Arc<DaemonState>) {
 
             let (count, since, clients) = {
                 let c = state.pty.lock().map(|m| m.session_count()).unwrap_or(0);
-                let s = state
-                    .zero_since
-                    .lock()
-                    .map(|z| *z)
-                    .unwrap_or(None);
+                let s = state.zero_since.lock().map(|z| *z).unwrap_or(None);
                 let cl = state.active_clients.load(Ordering::SeqCst);
                 (c, s, cl)
             };
@@ -169,14 +164,16 @@ fn spawn_idle_watcher(state: Arc<DaemonState>) {
 }
 
 pub fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
-    log::info!("winmux-daemon starting on {}", DAEMON_PIPE_NAME);
+    log::info!(
+        "winmux-daemon starting on {}",
+        crate::daemon::protocol::daemon_pipe_name()
+    );
     let state = Arc::new(DaemonState::new());
 
     spawn_idle_watcher(state.clone());
 
     #[cfg(windows)]
     {
-        use windows_sys::Win32::Foundation::CloseHandle;
         loop {
             if state.shutdown.load(Ordering::SeqCst) {
                 log::info!("Shutdown flag set — daemon exiting");
@@ -195,10 +192,11 @@ pub fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
                     client_id,
                     state_clone.active_clients.load(Ordering::SeqCst)
                 );
+                // handle_client takes ownership of the pipe handle and closes
+                // it when it returns — do not CloseHandle here (double close).
                 if let Err(e) = handle_client(handle, client_id, state_clone.clone()) {
                     log::debug!("Client {} error: {}", client_id, e);
                 }
-                unsafe { CloseHandle(handle as *mut std::ffi::c_void) };
                 // Clean up subscriptions for this client
                 if let Ok(mut subs) = state_clone.subs.lock() {
                     for senders in subs.values_mut() {
@@ -211,7 +209,8 @@ pub fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
                     .saturating_sub(1);
                 log::info!(
                     "daemon: client {} disconnected (remaining={})",
-                    client_id, remaining
+                    client_id,
+                    remaining
                 );
                 // Reset the zero-since clock when the last client detaches so
                 // the idle countdown starts fresh from "now" rather than from
@@ -240,7 +239,7 @@ fn create_named_pipe() -> Result<isize, Box<dyn std::error::Error>> {
     use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
     use windows_sys::Win32::System::Pipes::*;
 
-    let wide: Vec<u16> = DAEMON_PIPE_NAME
+    let wide: Vec<u16> = crate::daemon::protocol::daemon_pipe_name()
         .encode_utf16()
         .chain(std::iter::once(0))
         .collect();
@@ -281,74 +280,109 @@ fn handle_client(
     client_id: ClientId,
     state: Arc<DaemonState>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use std::os::windows::io::FromRawHandle;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle};
+    use std::sync::mpsc::TryRecvError;
+    use windows_sys::Win32::System::Pipes::PeekNamedPipe;
 
-    let file = unsafe { std::fs::File::from_raw_handle(handle as *mut std::ffi::c_void) };
-    let reader_file = file.try_clone()?;
-    let writer_file = file;
+    // The `File` owns the pipe handle and closes it on drop (the caller must
+    // NOT CloseHandle it again).
+    let mut file = unsafe { std::fs::File::from_raw_handle(handle as *mut std::ffi::c_void) };
 
-    // mpsc channel: any thread can push outbound lines, writer thread drains.
+    // mpsc channel: any thread can push outbound lines; this single thread
+    // drains it and writes to the pipe.
+    //
+    // IMPORTANT: a synchronous (non-overlapped) pipe handle serializes I/O
+    // through its file object. A dedicated reader thread blocked in `read`
+    // would hold that lock, so a concurrent write on a duplicated handle
+    // blocks forever — the daemon deadlocked on every response. We therefore
+    // poll with `PeekNamedPipe` and only read when bytes are ready, and do all
+    // reads and writes on this one thread. Never hold a blocking read while
+    // another thread writes.
     let (tx, rx) = mpsc::channel::<String>();
-
-    // Writer thread
-    let writer_handle = std::thread::spawn(move || {
-        let mut writer = writer_file;
-        while let Ok(line) = rx.recv() {
-            if writer.write_all(line.as_bytes()).is_err() {
-                break;
-            }
-            if writer.write_all(b"\n").is_err() {
-                break;
-            }
-            if writer.flush().is_err() {
-                break;
-            }
-        }
-        // Don't double-close; caller does CloseHandle.
-        std::mem::forget(writer);
-    });
-
     let client_sender = ClientSender {
         client_id,
         tx: tx.clone(),
     };
 
-    // Reader loop: parse requests, dispatch, send responses via tx.
-    let reader = BufReader::new(reader_file);
-    for line in reader.lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
+    let mut pending = String::new();
+    let mut buf = vec![0u8; 65536];
+
+    loop {
+        // 1) Drain anything the session callbacks queued for us.
+        loop {
+            match rx.try_recv() {
+                Ok(line) => {
+                    if file.write_all(line.as_bytes()).is_err()
+                        || file.write_all(b"\n").is_err()
+                        || file.flush().is_err()
+                    {
+                        return Ok(());
+                    }
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => return Ok(()),
+            }
         }
 
-        let resp = match serde_json::from_str::<RpcRequest>(&line) {
-            Ok(req) => dispatch(req, &state, &client_sender),
-            Err(e) => RpcResponse::error(None, "parse_error", &format!("Invalid JSON: {}", e)),
+        // 2) Read only when the client has actually sent something.
+        let mut avail: u32 = 0;
+        let ok = unsafe {
+            PeekNamedPipe(
+                file.as_raw_handle() as _,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                &mut avail,
+                std::ptr::null_mut(),
+            )
         };
-
-        let json = serde_json::to_string(&resp)?;
-        if tx.send(json).is_err() {
+        if ok == 0 {
+            // Broken pipe / client gone.
             break;
+        }
+
+        if avail > 0 {
+            use std::io::Read;
+            let n = match file.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(_) => break,
+            };
+            pending.push_str(&String::from_utf8_lossy(&buf[..n]));
+
+            while let Some(pos) = pending.find('\n') {
+                let line: String = pending.drain(..=pos).collect();
+                let line = line.trim_end_matches(['\r', '\n']);
+                if line.trim().is_empty() {
+                    continue;
+                }
+
+                let resp = match serde_json::from_str::<RpcRequest>(line) {
+                    Ok(req) => dispatch(req, &state, &client_sender),
+                    Err(e) => {
+                        RpcResponse::error(None, "parse_error", &format!("Invalid JSON: {}", e))
+                    }
+                };
+
+                let json = serde_json::to_string(&resp)?;
+                if tx.send(json).is_err() {
+                    break;
+                }
+            }
+        } else {
+            std::thread::sleep(Duration::from_millis(2));
         }
     }
 
-    drop(tx); // signal writer to exit
-    let _ = writer_handle.join();
     Ok(())
 }
 
-fn dispatch(
-    req: RpcRequest,
-    state: &Arc<DaemonState>,
-    client: &ClientSender,
-) -> RpcResponse {
+fn dispatch(req: RpcRequest, state: &Arc<DaemonState>, client: &ClientSender) -> RpcResponse {
     let id = req.id.clone();
     let params = req.params.clone().unwrap_or(Value::Null);
 
     match req.method.as_str() {
-        method::PING => {
-            RpcResponse::success(id, serde_json::json!({"status": "ok"}))
-        }
+        method::PING => RpcResponse::success(id, serde_json::json!({"status": "ok"})),
 
         method::CAPABILITIES => {
             let result = CapabilitiesResult {
@@ -399,9 +433,7 @@ fn dispatch(
                 Ok(p) => p,
                 Err(e) => return RpcResponse::error(id, "bad_params", &e.to_string()),
             };
-            let shell = p
-                .shell
-                .unwrap_or_else(|| "powershell.exe".to_string());
+            let shell = p.shell.unwrap_or_else(|| "powershell.exe".to_string());
             let cwd = p.cwd;
             let subs = state.subs.clone();
 
@@ -413,7 +445,14 @@ fn dispatch(
             let new_id = uuid::Uuid::new_v4().to_string();
             let callbacks = build_broadcast_callbacks(new_id.clone(), subs, state.clone());
 
-            match mgr.create(new_id.clone(), &shell, cwd.as_deref(), p.cols, p.rows, callbacks) {
+            match mgr.create(
+                new_id.clone(),
+                &shell,
+                cwd.as_deref(),
+                p.cols,
+                p.rows,
+                callbacks,
+            ) {
                 Ok(()) => {
                     drop(mgr);
                     state.mark_active();
@@ -539,10 +578,9 @@ fn dispatch(
                 Err(e) => return RpcResponse::error(id, "internal", &e.to_string()),
             };
             match mgr.get_scrollback(&p.id) {
-                Ok(bytes) => RpcResponse::success(
-                    id,
-                    serde_json::json!({"data_b64": B64.encode(&bytes)}),
-                ),
+                Ok(bytes) => {
+                    RpcResponse::success(id, serde_json::json!({"data_b64": B64.encode(&bytes)}))
+                }
                 Err(e) => RpcResponse::error(id, "not_found", &e),
             }
         }
@@ -637,8 +675,12 @@ fn build_broadcast_callbacks(
 
 fn push_to_subscribers(subs: &Subscribers, session_id: &str, notif: &RpcNotification) {
     let Ok(subs) = subs.lock() else { return };
-    let Some(senders) = subs.get(session_id) else { return };
-    let Ok(line) = serde_json::to_string(notif) else { return };
+    let Some(senders) = subs.get(session_id) else {
+        return;
+    };
+    let Ok(line) = serde_json::to_string(notif) else {
+        return;
+    };
     for s in senders {
         let _ = s.tx.send(line.clone());
     }
